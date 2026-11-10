@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPL Tracker — Progress page: All charts + One at a time</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --s1: #2a78d6; --s2: #eb6834; --good-text: #006300;
+    --warning: #fab219; --good: #0ca30c; --border: rgba(11,11,11,.10); --chip: #efeeea; --stage: #e9e8e3;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+      --border: rgba(255,255,255,.10); --chip: #262624; --stage: #000;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+    --border: rgba(255,255,255,.10); --chip: #262624; --stage: #000;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--stage); color: var(--ink);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button { font: inherit; color: inherit; }
+
+  .topbar { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 20px 16px 0; }
+  .topbar h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .theme-toggle { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+
+  .stage { display: flex; gap: 40px; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 20px 16px 48px; }
+  .option { width: 390px; }
+  .option > h2 { font-size: 16px; margin: 0 0 2px; }
+  .option > p { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
+
+  .phone { width: 390px; background: var(--page); border-radius: 40px; border: 1px solid var(--border);
+           box-shadow: var(--shadow); overflow: clip; position: relative; }
+  .screen { padding: 8px 12px 16px; }
+  .statusbar { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px;
+               font-size: 14px; font-weight: 600; }
+
+  .appbar h2 { font-size: 30px; font-weight: 700; margin: 4px 4px 10px; letter-spacing: -0.01em; }
+
+  .chips { display: flex; gap: 6px; margin: 0 2px 10px; }
+  .chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px;
+          font-size: 13px; cursor: pointer; min-height: 32px; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; }
+  .tile .label { font-size: 12px; color: var(--ink-2); }
+  .tile .value { font-size: 24px; font-weight: 600; line-height: 1.2; }
+  .tile .sub { font-size: 12px; color: var(--muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-top: 10px; position: relative; }
+  .card h3 { font-size: 16px; font-weight: 600; margin: 0; }
+  .card .cap { font-size: 12px; color: var(--ink-2); margin: 2px 0 0; }
+  .lift-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .lift-now { text-align: right; }
+  .lift-now .v { font-size: 20px; font-weight: 600; line-height: 1.2; }
+  .delta { font-size: 12px; color: var(--good-text); white-space: nowrap; }
+  .delta.flat { color: var(--ink-2); }
+
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 10px 0 2px; }
+  .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+
+  .chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .chart:focus { outline: 2px solid var(--s1); outline-offset: 4px; border-radius: 6px; }
+
+  .tooltip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+             box-shadow: var(--shadow); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 150px; display: none; }
+  .tooltip .t-date { color: var(--muted); margin-bottom: 4px; }
+  .tooltip .t-row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .tooltip .t-v { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tooltip .t-n { color: var(--ink-2); }
+
+  details { margin-top: 8px; }
+  summary { font-size: 12px; color: var(--ink-2); cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th { text-align: left; font-weight: 500; color: var(--ink-2); font-size: 12px; }
+  th, td { padding: 7px 4px; border-bottom: 1px solid var(--grid); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  td .when { display: block; font-size: 11px; color: var(--muted); }
+
+  .seg { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--chip); border-radius: 12px; padding: 3px; margin-top: 10px; }
+  .seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px 2px; font-size: 12.5px; cursor: pointer; min-height: 36px; }
+  .seg button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+
+  .hero { font-size: 48px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; margin-top: 6px; }
+  .hero small { font-size: 20px; font-weight: 500; color: var(--ink-2); letter-spacing: 0; }
+  .mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .mini div { font-size: 12px; color: var(--ink-2); }
+  .mini b { display: block; font-size: 15px; color: var(--ink); font-weight: 600; }
+
+  .rows .row { display: grid; grid-template-columns: 1fr 70px 76px; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+  .rows .row:last-child { border-bottom: 0; }
+  .rows .name { font-size: 14px; }
+  .rows .now { text-align: right; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rows .now .delta { display: block; font-weight: 400; }
+
+  .watch .item { display: flex; gap: 10px; padding: 8px 0; align-items: flex-start; }
+  .watch .item + .item { border-top: 1px solid var(--grid); }
+  .watch .txt { font-size: 13.5px; }
+  .watch .txt b { font-weight: 600; }
+  .watch .txt span { display: block; color: var(--ink-2); font-size: 12.5px; }
+
+  .tabbar { position: sticky; bottom: 0; height: 74px; background: var(--surface); border-top: 1px solid var(--border);
+            display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 4px 18px; }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); }
+  .tab svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .tab.active { color: var(--s1); font-weight: 600; }
+
+  .single { display: flex; justify-content: center; padding: 20px 16px 48px; }
+  .focus-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .pill { font-size: 11px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .pill.main { background: var(--chip); }
+  .delta.up { color: var(--good-text); }
+  .explain { font-size: 12.5px; color: var(--ink-2); margin: 10px 0 2px; }
+  .list .group-head { display: flex; justify-content: space-between; margin: 14px 0 2px; font-size: 13px; font-weight: 600; }
+  .list .group-head .days { font-weight: 400; color: var(--muted); font-size: 12px; }
+  .xrow { width: 100%; display: grid; grid-template-columns: 1fr 60px 88px; align-items: center; gap: 8px; text-align: left;
+          border: 0; border-top: 1px solid var(--grid); background: transparent; padding: 9px 4px; cursor: pointer; min-height: 48px; border-radius: 0; }
+  .xrow.selected { background: var(--chip); border-radius: 10px; border-top-color: transparent; }
+  .xname { font-size: 14px; line-height: 1.25; }
+  .xname .tag { font-size: 10.5px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; margin-left: 6px; vertical-align: 1px; }
+  .xname .sub { display: block; font-size: 11.5px; color: var(--muted); }
+  .xname .last { display: block; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .xname .last b { color: var(--ink); font-weight: 600; }
+  .xnow { text-align: right; font-variant-numeric: tabular-nums; }
+  .xnow .w { font-size: 14px; font-weight: 600; }
+  .xnow .r { font-size: 11.5px; color: var(--muted); }
+  .xdelta { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .xdelta .up { color: var(--good-text); } .xdelta .flat { color: var(--ink-2); }
+  .ready { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; color: var(--good-text);
+           border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+
+  .seg.views { grid-template-columns: repeat(2, 1fr); margin: 0 0 10px; }
+  .seg.views button { font-size: 13.5px; }
+  .section-head { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 4px 0; font-size: 18px; font-weight: 700; scroll-margin-top: 12px; }
+  .section-head .days { font-size: 12.5px; font-weight: 400; color: var(--muted); }
+  .chips.jump { margin: 12px 2px 0; }
+  .card h3 .tag { font-size: 10.5px; font-weight: 400; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; margin-left: 6px; vertical-align: 2px; }
+  .lastline { font-size: 12.5px; color: var(--ink-2); margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+  .mini-card .legend { margin-top: 6px; }
+  .mini-card .chart { margin-top: 6px; }
+  .more { border: 0; background: transparent; color: var(--s1); font-size: 13px; font-weight: 600; padding: 8px 0 0; cursor: pointer; min-height: 32px; }
+  .lift-now .ready { margin-top: 3px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Progress page — two views: All charts · One at a time (sample data)</h1>
+    <button class="theme-toggle" id="themeBtn" type="button">Switch to dark</button>
+  </div>
+  <div class="single"><div class="phone" id="phone"></div></div>
+<script>
+/* ---------- dates (local calendar dates; never toISOString) ---------- */
+const TODAY = '2026-11-10';
+const toDate = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d, 12); };
+const toISO = dt => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+const addDays = (s, n) => { const d = toDate(s); d.setDate(d.getDate() + n); return toISO(d); };
+const ddmm = s => `${s.slice(8, 10)}/${s.slice(5, 7)}`;
+const ddmmyyyy = s => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+const daysBetween = (a, b) => Math.round((toDate(b) - toDate(a)) / 86400000);
+const weekStart = s => { const d = toDate(s); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return toISO(d); };
+const kg = w => `${+(+w).toFixed(2)}`;
+const compact = v => v >= 1000 ? `${+(v / 1000).toFixed(1)}K` : `${Math.round(v)}`;
+const e1rm = (w, r) => r <= 0 ? 0 : r === 1 ? w : Math.round(w * (1 + r / 30) * 10) / 10;
+
+/* ---------- the program's exercises (default picks) ---------- */
+const GROUPS = [
+  { id: 'pull', label: 'Pull', days: 'Days 1 & 4' },
+  { id: 'push', label: 'Push', days: 'Days 2 & 5' },
+  { id: 'legs', label: 'Legs', days: 'Days 3 & 6' },
+];
+const EX = [
+  { id: 'deadlift', name: 'Deadlift', group: 'pull', main: true, short: 'Dead' },
+  { id: 'barbellRow', name: 'Barbell row', group: 'pull', main: true, short: 'Row' },
+  { id: 'latPulldown', name: 'Lat pulldown', group: 'pull', sets: 3, min: 8, max: 12, start: 40, on: ['pullA', 'pullB'] },
+  { id: 'cableRow', name: 'Seated cable row', group: 'pull', sets: 3, min: 8, max: 12, start: 40, on: ['pullA', 'pullB'] },
+  { id: 'facePull', name: 'Face pull', group: 'pull', sets: 5, min: 15, max: 20, start: 15, on: ['pullA', 'pullB'] },
+  { id: 'hammerCurl', name: 'Hammer curl', group: 'pull', sets: 4, min: 8, max: 12, start: 12.5, on: ['pullA', 'pullB'] },
+  { id: 'dbCurl', name: 'Dumbbell curl', group: 'pull', sets: 4, min: 8, max: 12, start: 10, on: ['pullA', 'pullB'] },
+  { id: 'bench', name: 'Bench press', group: 'push', main: true, short: 'Bench' },
+  { id: 'ohp', name: 'Overhead press', group: 'push', main: true, short: 'OHP' },
+  { id: 'ohpLight', name: 'Overhead press', tag: '8–12 reps', group: 'push', sets: 3, min: 8, max: 12, start: 25, on: ['pushA'] },
+  { id: 'benchLight', name: 'Bench press', tag: '8–12 reps', group: 'push', sets: 3, min: 8, max: 12, start: 40, on: ['pushB'] },
+  { id: 'inclineDb', name: 'Incline dumbbell press', group: 'push', sets: 3, min: 8, max: 12, start: 17.5, on: ['pushA', 'pushB'] },
+  { id: 'pushdown', name: 'Triceps pushdown', group: 'push', sets: 3, min: 8, max: 12, start: 20, on: ['pushA', 'pushB'] },
+  { id: 'ohExt', name: 'Overhead triceps extension', group: 'push', sets: 3, min: 8, max: 12, start: 15, on: ['pushA', 'pushB'] },
+  { id: 'lateral', name: 'Lateral raise', tag: '2 supersets of 3', group: 'push', sets: 6, min: 15, max: 20, start: 7.5, on: ['pushA', 'pushB'] },
+  { id: 'squat', name: 'Squat', group: 'legs', main: true, short: 'Squat' },
+  { id: 'rdl', name: 'Romanian deadlift', group: 'legs', sets: 3, min: 8, max: 12, start: 50, on: ['legs'] },
+  { id: 'legPress', name: 'Leg press', group: 'legs', sets: 3, min: 8, max: 12, start: 100, on: ['legs'] },
+  { id: 'legCurl', name: 'Leg curl', group: 'legs', sets: 3, min: 8, max: 12, start: 30, on: ['legs'] },
+  { id: 'calf', name: 'Calf raise', group: 'legs', sets: 5, min: 8, max: 12, start: 40, on: ['legs'] },
+];
+const exById = Object.fromEntries(EX.map(e => [e.id, e]));
+const MAIN_LIFTS = ['squat', 'bench', 'deadlift', 'ohp', 'barbellRow'];
+const label = e => e.tag ? `${e.name} (${e.tag})` : e.name;
+const prescription = e => e.main ? ({ deadlift: '1×5+', squat: '2×5, 1×5+' }[e.id] || '4×5, 1×5+') : `${e.sets}×${e.min}–${e.max}`;
+
+/* ---------- sample data: 7 cycles of Pull A, Push A, Legs, Pull B, Push B, Legs ---------- */
+const ROTATION = ['pullA', 'pushA', 'legs', 'pullB', 'pushB', 'legs'];
+const MAIN_OF = { pullA: 'deadlift', pushA: 'bench', legs: 'squat', pullB: 'barbellRow', pushB: 'ohp' };
+const five = (w, amrap) => [w, [5, 5, 5, 5, amrap]];
+const MAIN_SCRIPT = {
+  squat: [[60, 8], [62.5, 7], [65, 8], [67.5, 7], [70, 7], [72.5, 6], [75, 7], [77.5, 6], [80, 6], [82.5, 7], [85, 6], [87.5, 5], [90, 6], [92.5, 6]].map(([w, a]) => [w, [5, 5, a]]),
+  deadlift: [[80, 8], [85, 8], [90, 7], [95, 7], [100, 6], [105, 7], [110, 6]].map(([w, a]) => [w, [a]]),
+  bench: [five(52.5, 8), five(55, 7), five(57.5, 7), five(60, 6), five(62.5, 6), [65, [5, 5, 5, 4, 4]], [65, [5, 5, 4, 4, 3]]],
+  ohp: [five(35, 8), five(37.5, 7), five(40, 6), [42.5, [5, 5, 4, 4, 3]], [42.5, [5, 5, 5, 4, 4]], [42.5, [5, 4, 4, 4, 3]], five(37.5, 9)],
+  barbellRow: [five(45, 8), five(47.5, 7), five(50, 8), five(52.5, 7), five(55, 7), five(57.5, 6), five(60, 6)],
+};
+
+// Double progression for accessories: add reps up to the top of the range, then add 2.5 kg and drop back.
+let seed = 11;
+const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+function doubleProgression(n, { sets, min, max, start }) {
+  const out = []; let w = start;
+  let reps = Array.from({ length: sets }, (_, i) => (i === 0 ? min + 1 : min));
+  for (let k = 0; k < n; k++) {
+    out.push([w, [...reps]]);
+    if (reps.every(r => r >= max)) { w = +(w + 2.5).toFixed(2); reps = reps.map((_, i) => (i === 0 ? min + 1 : min)); continue; }
+    const roll = rnd();
+    if (roll < 0.15) continue; // a flat day
+    const bumps = roll < 0.5 ? Math.ceil(sets / 2) : sets;
+    const order = reps.map((r, i) => [r, i]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    for (let b = 0; b < bumps; b++) { const i = order[b][1]; reps[i] = Math.min(max, reps[i] + 1 + (roll > 0.85 ? 1 : 0)); }
+  }
+  return out;
+}
+
+function buildSessions() {
+  const used = {}; const next = id => (used[id] = (used[id] || 0) + 1) - 1;
+  const counts = {};
+  for (const e of EX) if (!e.main) counts[e.id] = 42 / 6 * e.on.reduce((t, d) => t + ROTATION.filter(r => r === d).length, 0);
+  const accScript = Object.fromEntries(EX.filter(e => !e.main).map(e => [e.id, doubleProgression(counts[e.id], e)]));
+  const extraGap = { 14: 1, 19: 3, 32: 1 }; // gym closed, a few sick days, a busy day
+  const sessions = []; let date = '2026-09-14';
+  for (let i = 0; i < 42; i++) {
+    const day = ROTATION[i % 6];
+    const mainId = MAIN_OF[day];
+    const entries = [{ id: mainId, sets: (([w, r]) => r.map(reps => ({ w, reps })))(MAIN_SCRIPT[mainId][next(mainId)]) }];
+    for (const e of EX) {
+      if (e.main || !e.on.includes(day)) continue;
+      const [w, r] = accScript[e.id][next(e.id)];
+      entries.push({ id: e.id, sets: r.map(reps => ({ w, reps })) });
+    }
+    sessions.push({ date, day, entries });
+    date = addDays(date, 1 + (i % 6 === 5 ? 1 : 0) + (extraGap[i] || 0));
+  }
+  return sessions;
+}
+const ALL = buildSessions();
+
+/* ---------- derived numbers ---------- */
+const RANGES = [{ id: '4w', label: '4 weeks', days: 28 }, { id: '3m', label: '3 months', days: 91 }, { id: 'all', label: 'All', days: null }];
+const inRange = (s, range) => range.days == null || daysBetween(s.date, TODAY) < range.days;
+function pointsFor(sessions, id) {
+  const out = [];
+  for (const s of sessions) {
+    const en = s.entries.find(e => e.id === id); if (!en) continue;
+    const w = Math.max(...en.sets.map(x => x.w)), reps = en.sets.map(x => x.reps);
+    out.push({ x: s.date, w, reps, total: reps.reduce((a, b) => a + b, 0), e: Math.max(...reps.map(r => e1rm(w, r))) });
+  }
+  return out;
+}
+const volumeOf = s => s.entries.reduce((t, en) => t + en.sets.reduce((u, x) => u + x.w * x.reps, 0), 0);
+function weekly(sessions) {
+  if (!sessions.length) return [];
+  const out = [];
+  for (let wk = weekStart(sessions[0].date); wk <= weekStart(sessions[sessions.length - 1].date); wk = addDays(wk, 7)) {
+    const these = sessions.filter(s => weekStart(s.date) === wk);
+    out.push({ x: wk, v: these.reduce((t, s) => t + volumeOf(s), 0), n: these.length });
+  }
+  return out;
+}
+const deloadFrom = (w, inc = 2.5) => Math.floor((w * 0.9) / inc + 1e-9) * inc;
+const isReady = (e, p) => !e.main && p && p.reps.length >= e.sets && p.reps.every(r => r >= e.max);
+const repsToGo = (e, p) => p.reps.reduce((t, r) => t + Math.max(0, e.max - r), 0);
+
+/* ---------- DOM helpers ---------- */
+const SVGNS = 'http://www.w3.org/2000/svg';
+function niceNum(x) { const e = Math.floor(Math.log10(x)); const f = x / 10 ** e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * 10 ** e; }
+function niceTicks(min, max, count = 4) {
+  if (min === max) { min -= 5; max += 5; }
+  const step = niceNum((max - min) / (count - 1));
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const ticks = []; for (let v = lo; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(4));
+  return ticks;
+}
+function el(tag, attrs = {}, text) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text != null) n.textContent = text;
+  return n;
+}
+function h(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+function keyEl(color) { const k = h('span', 'key'); k.style.background = color; return k; }
+
+/** Shared tooltip + crosshair plumbing for charts with one x position per point. */
+function attachCrosshair(card, svg, { width, points, X, top, bottom, rows, onIndex }) {
+  const cross = el('line', { y1: top, y2: bottom, stroke: 'var(--ink-2)', 'stroke-width': 1, opacity: 0 });
+  svg.append(cross);
+  svg.append(el('rect', { x: 0, y: 0, width, height: bottom + 4, fill: 'transparent' }));
+  const tip = h('div', 'tooltip'); card.append(tip);
+  let idx = -1;
+  function show(i) {
+    idx = i; const p = points[i];
+    cross.setAttribute('x1', X(p.x)); cross.setAttribute('x2', X(p.x)); cross.setAttribute('opacity', 1);
+    onIndex(i);
+    tip.replaceChildren(h('div', 't-date', ddmmyyyy(p.x)));
+    for (const [color, value, name] of rows(p)) { const r = h('div', 't-row'); r.append(keyEl(color), h('span', 't-v', value), h('span', 't-n', name)); tip.append(r); }
+    tip.style.display = 'block';
+    const box = svg.getBoundingClientRect(), cb = card.getBoundingClientRect();
+    const px = box.left - cb.left + (X(p.x) / width) * box.width;
+    const left = px + 12 + tip.offsetWidth > cb.width ? px - 12 - tip.offsetWidth : px + 12;
+    tip.style.left = `${Math.max(6, left)}px`; tip.style.top = `${box.top - cb.top + 4}px`;
+  }
+  function hide() { idx = -1; cross.setAttribute('opacity', 0); tip.style.display = 'none'; onIndex(-1); }
+  function nearest(clientX) {
+    const box = svg.getBoundingClientRect(); const vx = ((clientX - box.left) / box.width) * width;
+    let best = 0; points.forEach((p, i) => { if (Math.abs(X(p.x) - vx) < Math.abs(X(points[best].x) - vx)) best = i; }); return best;
+  }
+  svg.setAttribute('tabindex', '0');
+  svg.addEventListener('pointermove', e => show(nearest(e.clientX)));
+  svg.addEventListener('pointerdown', e => show(nearest(e.clientX)));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') { if (e.key === 'Escape') hide(); return; }
+    e.preventDefault(); const cur = idx < 0 ? points.length - 1 : idx;
+    show(Math.min(points.length - 1, Math.max(0, cur + (e.key === 'ArrowRight' ? 1 : -1))));
+  });
+}
+
+function timeScale(points, x0, x1) {
+  const t0 = toDate(points[0].x), t1 = toDate(points[points.length - 1].x);
+  return iso => points.length === 1 ? (x0 + x1) / 2 : x0 + ((toDate(iso) - t0) / (t1 - t0)) * (x1 - x0);
+}
+function yAxis(svg, ticks, Y, x0, x1, fmt) {
+  for (const t of ticks) {
+    svg.append(el('line', { x1: x0, x2: x1, y1: Y(t), y2: Y(t), stroke: t === ticks[0] ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }));
+    svg.append(el('text', { x: x0 - 6, y: Y(t) + 4, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 10.5, style: 'font-variant-numeric: tabular-nums' }, fmt(t)));
+  }
+}
+function xLabels(svg, points, X, y) {
+  const t0 = toDate(points[0].x), t1 = toDate(points[points.length - 1].x);
+  const ticks = points.length === 1 ? [points[0].x] : [points[0].x, toISO(new Date((+t0 + +t1) / 2)), points[points.length - 1].x];
+  ticks.forEach((d, i) => svg.append(el('text', { x: X(d), y, 'text-anchor': points.length === 1 ? 'middle' : ['start', 'middle', 'end'][i], fill: 'var(--muted)', 'font-size': 10.5 }, ddmm(d))));
+}
+function noData(card, width, height) {
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'No data yet' });
+  svg.append(el('text', { x: width / 2, y: height / 2, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 13 }, 'No data yet'));
+  card.append(svg);
+}
+
+/** Main lift: working weight + estimated 1-rep max on one kg axis. */
+function mainLiftChart(card, points, annotations = [], { height = 210 } = {}) {
+  const width = 336, m = { l: 34, r: 40, t: annotations.length ? 24 : 14, b: 22 };
+  if (!points.length) return noData(card, width, height);
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Working weight and estimated 1-rep max over time' });
+  const ticks = niceTicks(Math.min(...points.map(p => p.w)), Math.max(...points.map(p => p.e)));
+  const ph = height - m.t - m.b, X = timeScale(points, m.l, width - m.r);
+  const Y = v => m.t + ph - ((v - ticks[0]) / (ticks[ticks.length - 1] - ticks[0])) * ph;
+  yAxis(svg, ticks, Y, m.l, width - m.r, kg);
+  xLabels(svg, points, X, height - 5);
+  for (const a of annotations) {
+    svg.append(el('line', { x1: X(a.x), x2: X(a.x), y1: m.t - 12, y2: m.t + ph, stroke: 'var(--axis)', 'stroke-width': 1 }));
+    svg.append(el('text', { x: X(a.x) - 5, y: m.t - 9, 'text-anchor': 'end', fill: 'var(--ink-2)', 'font-size': 10.5 }, a.label));
+  }
+  const series = [{ key: 'w', label: 'Working weight', color: 'var(--s1)' }, { key: 'e', label: 'Est. 1-rep max', color: 'var(--s2)' }];
+  const dots = series.map(s => {
+    svg.append(el('path', { d: points.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p[s.key]).toFixed(1)}`).join(''), fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const ds = points.map(p => { const c = el('circle', { cx: X(p.x), cy: Y(p[s.key]), r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }); svg.append(c); return c; });
+    const last = points[points.length - 1];
+    svg.append(el('text', { x: X(last.x) + 8, y: Y(last[s.key]) + 4, fill: 'var(--ink-2)', 'font-size': 11, 'font-weight': 600 }, kg(last[s.key])));
+    return ds;
+  });
+  attachCrosshair(card, svg, {
+    width, points, X, top: m.t, bottom: m.t + ph,
+    rows: p => [['var(--s1)', `${kg(p.w)} kg`, `Working weight · sets ${p.reps.join(', ')}`], ['var(--s2)', `${kg(p.e)} kg`, 'Est. 1-rep max']],
+    onIndex: i => dots.forEach(ds => ds.forEach((d, j) => d.setAttribute('r', j === i ? 5.5 : 4))),
+  });
+  card.append(svg);
+}
+
+/** Accessory: weight (top panel) and total reps per session (bottom panel) on one shared date axis. */
+function accessoryChart(card, points, ex, { compact = false } = {}) {
+  const width = 336, height = compact ? 204 : 250, m = { l: 34, r: 40 };
+  if (!points.length) return noData(card, width, height);
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${label(ex)}: weight and total reps per session` });
+  const X = timeScale(points, m.l + 6, width - m.r - 6);
+  const top = compact ? { t: 20, b: 84 } : { t: 22, b: 118 }, bot = compact ? { t: 126, b: 180 } : { t: 152, b: 226 };
+
+  // panel 1: weight
+  svg.append(el('text', { x: 0, y: top.t - 12, fill: 'var(--ink-2)', 'font-size': 11, 'font-weight': 600 }, 'Weight (kg)'));
+  const wt = niceTicks(Math.min(...points.map(p => p.w)), Math.max(...points.map(p => p.w)), 3);
+  const YW = v => top.b - ((v - wt[0]) / (wt[wt.length - 1] - wt[0])) * (top.b - top.t);
+  yAxis(svg, wt, YW, m.l, width - m.r, kg);
+  svg.append(el('path', { d: points.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${YW(p.w).toFixed(1)}`).join(''), fill: 'none', stroke: 'var(--s1)', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  const dots = points.map(p => { const c = el('circle', { cx: X(p.x), cy: YW(p.w), r: 4, fill: 'var(--s1)', stroke: 'var(--surface)', 'stroke-width': 2 }); svg.append(c); return c; });
+  const last = points[points.length - 1];
+  svg.append(el('text', { x: X(last.x) + 8, y: YW(last.w) + 4, fill: 'var(--ink-2)', 'font-size': 11, 'font-weight': 600 }, kg(last.w)));
+
+  // panel 2: total reps, with the "add weight" target line
+  const target = ex.sets * ex.max;
+  svg.append(el('text', { x: 0, y: bot.t - 14, fill: 'var(--ink-2)', 'font-size': 11, 'font-weight': 600 }, 'Total reps'));
+  const rt = niceTicks(0, target, 4), rTop = rt[rt.length - 1];
+  const YR = v => bot.b - (v / rTop) * (bot.b - bot.t);
+  yAxis(svg, rt, YR, m.l, width - m.r, v => String(v));
+  const band = points.length > 1 ? (X(points[1].x) - X(points[0].x)) : 40;
+  const bw = Math.max(4, Math.min(12, band * 0.55));
+  const bars = points.map(p => {
+    const x = X(p.x) - bw / 2, y = YR(p.total), base = YR(0), r = Math.min(3, bw / 2, (base - y) / 2);
+    const b = el('path', { d: `M${x},${base}L${x},${y + r}Q${x},${y} ${x + r},${y}L${x + bw - r},${y}Q${x + bw},${y} ${x + bw},${y + r}L${x + bw},${base}Z`, fill: 'var(--s2)' });
+    svg.append(b); return b;
+  });
+  svg.append(el('line', { x1: m.l, x2: width - m.r, y1: YR(target), y2: YR(target), stroke: 'var(--ink-2)', 'stroke-width': 1 }));
+  svg.append(el('text', { x: width - m.r + 4, y: YR(target) + 4, fill: 'var(--ink-2)', 'font-size': 10.5 }, `${target}`));
+  svg.append(el('text', { x: width - m.r, y: bot.t - 14, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 10.5 }, `line = ${ex.sets}×${ex.max}, time to add weight`));
+  xLabels(svg, points, X, height - 5);
+
+  attachCrosshair(card, svg, {
+    width, points, X, top: top.t, bottom: bot.b,
+    rows: p => [['var(--s1)', `${kg(p.w)} kg`, 'Weight'], ['var(--s2)', `${p.total} reps`, `sets ${p.reps.join(', ')}`]],
+    onIndex: i => { dots.forEach((d, j) => d.setAttribute('r', j === i ? 5.5 : 4)); bars.forEach((b, j) => b.setAttribute('opacity', i < 0 || j === i ? 1 : 0.55)); },
+  });
+  card.append(svg);
+}
+
+function weeklyChart(card, bars) {
+  const width = 336, height = 140, m = { l: 34, r: 8, t: 16, b: 22 };
+  if (!bars.length) return noData(card, width, height);
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Kilograms lifted per week' });
+  const ticks = niceTicks(0, Math.max(...bars.map(b => b.v)), 3), top = ticks[ticks.length - 1];
+  const pw = width - m.l - m.r, ph = height - m.t - m.b, band = pw / bars.length, bw = Math.min(24, band * 0.62);
+  const Y = v => m.t + ph - (v / top) * ph;
+  yAxis(svg, ticks, Y, m.l, width - m.r, compact);
+  const tip = h('div', 'tooltip'); card.append(tip);
+  bars.forEach((b, i) => {
+    const x = m.l + band * i + (band - bw) / 2, y = Y(b.v), base = Y(0), r = Math.min(4, (base - y) / 2);
+    const g = el('g', { tabindex: '0', role: 'img', 'aria-label': `Week of ${ddmm(b.x)}: ${Math.round(b.v)} kg` });
+    if (b.v > 0) g.append(el('path', { d: `M${x},${base}L${x},${y + r}Q${x},${y} ${x + r},${y}L${x + bw - r},${y}Q${x + bw},${y} ${x + bw},${y + r}L${x + bw},${base}Z`, fill: 'var(--s1)' }));
+    g.append(el('rect', { x: m.l + band * i, y: m.t, width: band, height: ph, fill: 'transparent' }));
+    if (i % 2 === (bars.length - 1) % 2) svg.append(el('text', { x: x + bw / 2, y: height - 5, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10.5 }, ddmm(b.x)));
+    const on = () => {
+      tip.replaceChildren(h('div', 't-date', `Week of ${ddmmyyyy(b.x)}`));
+      const row = h('div', 't-row'); row.append(keyEl('var(--s1)'), h('span', 't-v', `${Math.round(b.v).toLocaleString('en-IN')} kg`), h('span', 't-n', `${b.n} workout${b.n === 1 ? '' : 's'}`));
+      tip.append(row); tip.style.display = 'block';
+      const box = svg.getBoundingClientRect(), cb = card.getBoundingClientRect();
+      const px = box.left - cb.left + ((x + bw / 2) / width) * box.width;
+      tip.style.left = `${Math.max(6, Math.min(cb.width - tip.offsetWidth - 6, px - tip.offsetWidth / 2))}px`;
+      tip.style.top = `${box.top - cb.top + (y / height) * box.height - tip.offsetHeight - 8}px`;
+      g.style.opacity = 0.85;
+    };
+    const off = () => { tip.style.display = 'none'; g.style.opacity = 1; };
+    g.addEventListener('pointerenter', on); g.addEventListener('pointerdown', on); g.addEventListener('pointerleave', off);
+    g.addEventListener('focus', on); g.addEventListener('blur', off);
+    svg.append(g);
+  });
+  const last = bars[bars.length - 1];
+  svg.append(el('text', { x: m.l + band * (bars.length - 1) + band / 2, y: Y(last.v) - 5, 'text-anchor': 'middle', fill: 'var(--ink-2)', 'font-size': 11, 'font-weight': 600 }, compact(last.v)));
+  card.append(svg);
+}
+
+function sparkline(points) {
+  const w = 64, ht = 24, vals = points.map(p => p.w), lo = Math.min(...vals), hi = Math.max(...vals);
+  const X = i => points.length === 1 ? w / 2 : 3 + (i / (points.length - 1)) * (w - 8);
+  const Y = v => hi === lo ? ht / 2 : ht - 4 - ((v - lo) / (hi - lo)) * (ht - 8);
+  const svg = el('svg', { viewBox: `0 0 ${w} ${ht}`, width: w, height: ht, 'aria-hidden': 'true' });
+  svg.append(el('path', { d: points.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(p.w).toFixed(1)}`).join(''), fill: 'none', stroke: 'var(--muted)', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
+  const i = points.length - 1;
+  svg.append(el('circle', { cx: X(i), cy: Y(points[i].w), r: 3, fill: 'var(--s1)', stroke: 'var(--surface)', 'stroke-width': 1.5 }));
+  return svg;
+}
+
+/* ---------- page blocks ---------- */
+function statusBar() { const s = h('div', 'statusbar'); s.append(h('span', null, '9:41'), h('span', null, '●●● ▮')); return s; }
+function chipsRow(state, rerender) {
+  const row = h('div', 'chips');
+  for (const r of RANGES) {
+    const b = h('button', 'chip', r.label); b.type = 'button'; b.setAttribute('aria-pressed', String(state.range.id === r.id));
+    b.addEventListener('click', () => { state.range = r; rerender(); }); row.append(b);
+  }
+  return row;
+}
+function tiles(sessions) {
+  const last = ALL[ALL.length - 1];
+  const items = [
+    ['Workouts', String(sessions.length), 'in this range'],
+    ['This month', String(ALL.filter(s => s.date.slice(0, 7) === TODAY.slice(0, 7)).length), 'November'],
+    ['Last 7 days', String(ALL.filter(s => daysBetween(s.date, TODAY) < 7).length), 'workouts'],
+    ['Last workout', ddmm(last.date), `${daysBetween(last.date, TODAY)} days ago`],
+  ];
+  const g = h('div', 'tiles');
+  for (const [l, v, sub] of items) { const t = h('div', 'tile'); t.append(h('div', 'label', l), h('div', 'value', v), h('div', 'sub', sub)); g.append(t); }
+  return g;
+}
+function deltaText(points) {
+  if (points.length < 2) return ['flat', 'First session'];
+  const d = points[points.length - 1].w - points[0].w;
+  return [d > 0 ? 'up' : 'flat', `${d > 0 ? '▲ +' : d < 0 ? '▼ ' : '± '}${kg(d)} kg since ${ddmm(points[0].x)}`];
+}
+function readyTag() {
+  const t = h('span', 'ready');
+  const svg = el('svg', { viewBox: '0 0 12 12', width: 11, height: 11, 'aria-hidden': 'true' });
+  svg.append(el('path', { d: 'M6 2 10 7H7.5v3h-3V7H2Z', fill: 'var(--good)' }));
+  t.append(svg, document.createTextNode('Add 2.5 kg'));
+  return t;
+}
+function tableView(points, ex) {
+  const det = h('details'); det.append(h('summary', null, 'Show as table'));
+  const t = h('table'); const hr = h('tr');
+  const cols = ex.main ? ['Date', 'Sets', 'Weight', 'Est. 1RM'] : ['Date', 'Sets', 'Weight', 'Total reps'];
+  cols.forEach((c, i) => hr.append(h('th', i > 1 ? 'num' : null, c))); t.append(hr);
+  for (const p of [...points].reverse()) {
+    const tr = h('tr');
+    tr.append(h('td', null, ddmmyyyy(p.x)), h('td', null, p.reps.join(', ')), h('td', 'num', kg(p.w)), h('td', 'num', ex.main ? kg(p.e) : String(p.total)));
+    t.append(tr);
+  }
+  det.append(t); return det;
+}
+function focusCard(sessions, ex) {
+  const pts = pointsFor(sessions, ex.id);
+  const c = h('div', 'card focus'); c.id = 'focus';
+  const head = h('div', 'focus-head');
+  const titles = h('div'); titles.append(h('h3', null, label(ex)), h('p', 'cap', `${prescription(ex)} · ${GROUPS.find(g => g.id === ex.group).label} days`));
+  head.append(titles); if (!ex.main) head.append(h('span', 'pill', 'Accessory')); else head.append(h('span', 'pill main', 'Main lift'));
+  c.append(head);
+  const last = pts[pts.length - 1];
+  const hero = h('div', 'hero', last ? kg(last.w) : '—'); hero.append(h('small', null, ' kg'));
+  const [dir, dtext] = deltaText(pts);
+  c.append(hero, h('div', `delta ${dir}`, dtext));
+  const mini = h('div', 'mini');
+  const stat = (v, l) => { const d = h('div', null, l); d.prepend(h('b', null, v)); return d; };
+  if (ex.main) {
+    const best = pts.length ? pts.reduce((a, p) => (p.e > a.e ? p : a)) : null;
+    mini.append(stat(best ? `${kg(best.e)} kg` : '—', 'Best est. 1RM'), stat(String(pts.length), 'Sessions'), stat(last ? last.reps.join(',') : '—', 'Last time'));
+  } else {
+    const next = !last ? '—' : isReady(ex, last) ? 'Add 2.5 kg' : `${repsToGo(ex, last)} reps to go`;
+    mini.append(stat(last ? last.reps.join(',') : '—', 'Last time'), stat(`${ex.sets}×${ex.max}`, 'Target'), stat(next, 'Next'));
+  }
+  c.append(mini);
+  if (ex.main) {
+    const lg = h('div', 'legend');
+    for (const [color, name] of [['var(--s1)', 'Working weight'], ['var(--s2)', 'Est. 1-rep max']]) { const s = h('span'); s.append(keyEl(color), document.createTextNode(name)); lg.append(s); }
+    c.append(lg);
+    const ann = ex.id === 'ohp' && pts.length > 1 && last.w < pts[pts.length - 2].w ? [{ x: last.x, label: 'Deload −10%' }] : [];
+    mainLiftChart(c, pts, ann);
+  } else {
+    c.append(h('p', 'explain', 'Reps climb first. When every set hits the top of the range, the weight goes up and reps start again from the bottom.'));
+    accessoryChart(c, pts, ex);
+  }
+  c.append(tableView(pts, ex));
+  return c;
+}
+function exerciseList(sessions, state, rerender) {
+  const c = h('div', 'card list');
+  c.append(h('h3', null, 'All exercises'), h('p', 'cap', 'Tap one to see its chart above'));
+  for (const g of GROUPS) {
+    const gh = h('div', 'group-head'); gh.append(h('span', null, g.label), h('span', 'days', g.days)); c.append(gh);
+    for (const ex of EX.filter(e => e.group === g.id)) {
+      const pts = pointsFor(sessions, ex.id), last = pts[pts.length - 1];
+      const row = h('button', `xrow${state.focus === ex.id ? ' selected' : ''}`); row.type = 'button';
+      const name = h('div', 'xname'); name.append(document.createTextNode(ex.name));
+      if (ex.main) name.append(h('span', 'tag', 'Main'));
+      const lastLine = h('span', 'last');
+      if (last) { lastLine.append(h('b', null, `${kg(last.w)} kg`), document.createTextNode(` × ${last.reps.join(', ')}`)); } else lastLine.textContent = 'No sessions yet';
+      name.append(lastLine); if (ex.tag) name.append(h('span', 'sub', ex.tag));
+      const right = h('div', 'xdelta');
+      if (isReady(ex, last)) right.append(readyTag());
+      else if (pts.length > 1) { const d = last.w - pts[0].w; right.append(h('span', d > 0 ? 'up' : 'flat', `${d > 0 ? '+' : ''}${kg(d)} kg`)); }
+      row.append(name, pts.length ? sparkline(pts) : h('span'), right);
+      row.addEventListener('click', () => { state.focus = ex.id; rerender(); document.getElementById('focus').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+      c.append(row);
+    }
+  }
+  return c;
+}
+function volumeCard(sessions) {
+  const c = h('div', 'card'); c.append(h('h3', null, 'Weekly volume'), h('p', 'cap', 'Kilograms lifted per week, all exercises'));
+  weeklyChart(c, weekly(sessions)); return c;
+}
+function icon(kind) {
+  const s = el('svg', { viewBox: '0 0 20 20', width: 20, height: 20, 'aria-hidden': 'true' });
+  if (kind === 'warn') s.append(el('path', { d: 'M10 2.5 18.5 17h-17Z', fill: 'var(--warning)' }), el('path', { d: 'M10 8v4.2M10 14.6v.1', stroke: '#0b0b0b', 'stroke-width': 1.8, 'stroke-linecap': 'round' }));
+  else s.append(el('circle', { cx: 10, cy: 10, r: 8, fill: 'none', stroke: 'var(--ink-2)', 'stroke-width': 1.6 }), el('path', { d: 'M10 9v5M10 6.3v.1', stroke: 'var(--ink-2)', 'stroke-width': 1.8, 'stroke-linecap': 'round' }));
+  return s;
+}
+function watchCard() {
+  const c = h('div', 'card watch'); c.append(h('h3', null, 'Watch list'));
+  const b = pointsFor(ALL, 'bench').at(-1), o = pointsFor(ALL, 'ohp').at(-1);
+  const items = [
+    ['warn', 'Bench press', 'Needs attention', `2 misses in a row at ${kg(b.w)} kg. One more and it's deload time (${kg(deloadFrom(b.w))} kg).`],
+    ['info', 'Overhead press', 'Info', `Deloaded to ${kg(o.w)} kg after 3 misses at 42.5 kg. First session back: 9 reps on the last set.`],
+  ];
+  for (const [kind, name, lbl, text] of items) {
+    const it = h('div', 'item'); const tx = h('div', 'txt');
+    tx.append(h('b', null, name), document.createTextNode(` · ${lbl}`), h('span', null, text)); it.append(icon(kind), tx); c.append(it);
+  }
+  return c;
+}
+function bestsCard() {
+  const c = h('div', 'card'); c.append(h('h3', null, 'Personal bests'));
+  const t = h('table'); const hr = h('tr');
+  ['Lift', 'Heaviest', 'Est. 1RM'].forEach((x, i) => hr.append(h('th', i ? 'num' : null, x))); t.append(hr);
+  for (const id of MAIN_LIFTS) {
+    const pts = pointsFor(ALL, id), hw = pts.reduce((a, p) => (p.w > a.w ? p : a)), he = pts.reduce((a, p) => (p.e > a.e ? p : a));
+    const tr = h('tr');
+    const w = h('td', 'num', `${kg(hw.w)} kg`); w.append(h('span', 'when', ddmm(hw.x)));
+    const e = h('td', 'num', `${kg(he.e)} kg`); e.append(h('span', 'when', ddmm(he.x)));
+    tr.append(h('td', null, exById[id].name), w, e); t.append(tr);
+  }
+  c.append(t); return c;
+}
+const TAB_ICONS = {
+  Today: '<rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>',
+  Plan: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+  Progress: '<path d="M4 19h16M5 15l4-4 3 3 6-7"/>',
+  History: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  Data: '<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>',
+};
+function tabBar() {
+  const bar = h('nav', 'tabbar'); bar.setAttribute('aria-label', 'Sections');
+  for (const name of Object.keys(TAB_ICONS)) {
+    const t = h('div', `tab${name === 'Progress' ? ' active' : ''}`);
+    const svg = el('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' }); svg.innerHTML = TAB_ICONS[name]; // static markup only
+    t.append(svg, h('span', null, name)); bar.append(t);
+  }
+  return bar;
+}
+
+/* ---------- the page ---------- */
+const params = new URLSearchParams(location.search);
+const state = { range: RANGES[2], focus: params.get('focus') || 'squat', view: params.get('view') || 'all' };
+const VIEWS = [{ id: 'all', label: 'All charts' }, { id: 'focus', label: 'One at a time' }];
+function openInFocus(id) { state.view = 'focus'; state.focus = id; render(); window.scrollTo({ top: 0 }); }
+
+function miniCard(sessions, ex) {
+  const pts = pointsFor(sessions, ex.id), last = pts[pts.length - 1];
+  const c = h('div', 'card mini-card');
+  const head = h('div', 'lift-head');
+  const left = h('div');
+  const title = h('h3'); title.append(document.createTextNode(ex.name)); if (ex.main) title.append(h('span', 'tag', 'Main'));
+  left.append(title, h('p', 'cap', `${prescription(ex)}${ex.tag ? ` · ${ex.tag}` : ''}`));
+  const right = h('div', 'lift-now');
+  right.append(h('div', 'v', last ? `${kg(last.w)} kg` : '—'));
+  if (isReady(ex, last)) right.append(readyTag()); else { const [dir, t] = deltaText(pts); right.append(h('div', `delta ${dir}`, t.replace(/ since .*/, ''))); }
+  head.append(left, right); c.append(head);
+  if (last) c.append(h('p', 'lastline', `Last ${ddmm(last.x)}: ${kg(last.w)} kg × ${last.reps.join(', ')}${ex.main ? '' : ` · ${isReady(ex, last) ? 'all sets at the top' : `${repsToGo(ex, last)} reps to go`}`}`));
+  if (ex.main) {
+    const lg = h('div', 'legend');
+    for (const [color, name] of [['var(--s1)', 'Working weight'], ['var(--s2)', 'Est. 1-rep max']]) { const sp = h('span'); sp.append(keyEl(color), document.createTextNode(name)); lg.append(sp); }
+    c.append(lg);
+    const ann = ex.id === 'ohp' && pts.length > 1 && last.w < pts[pts.length - 2].w ? [{ x: last.x, label: 'Deload −10%' }] : [];
+    mainLiftChart(c, pts, ann, { height: 150 });
+  } else accessoryChart(c, pts, ex, { compact: true });
+  const more = h('button', 'more', 'Open big chart ›'); more.type = 'button';
+  more.addEventListener('click', () => openInFocus(ex.id));
+  c.append(more);
+  return c;
+}
+
+function allChartsView(sessions) {
+  const out = [];
+  const jump = h('div', 'chips jump');
+  for (const g of GROUPS) {
+    const b = h('button', 'chip', g.label); b.type = 'button';
+    b.addEventListener('click', () => document.getElementById(`grp-${g.id}`).scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    jump.append(b);
+  }
+  out.push(watchCard(), jump);
+  for (const g of GROUPS) {
+    const gh = h('div', 'section-head'); gh.id = `grp-${g.id}`;
+    gh.append(h('span', null, g.label), h('span', 'days', g.days));
+    out.push(gh);
+    for (const ex of EX.filter(e => e.group === g.id)) out.push(miniCard(sessions, ex));
+  }
+  out.push(volumeCard(sessions), bestsCard());
+  return out;
+}
+
+function focusView(sessions) {
+  const seg = h('div', 'seg'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Main lifts');
+  for (const id of MAIN_LIFTS) {
+    const b = h('button', null, exById[id].short); b.type = 'button'; b.setAttribute('aria-pressed', String(state.focus === id));
+    b.addEventListener('click', () => { state.focus = id; render(); }); seg.append(b);
+  }
+  return [seg, focusCard(sessions, exById[state.focus]), exerciseList(sessions, state, render), volumeCard(sessions), watchCard(), bestsCard()];
+}
+
+function render() {
+  const sessions = ALL.filter(s => inRange(s, state.range));
+  const scr = h('div', 'screen');
+  const ab = h('div', 'appbar'); ab.append(h('h2', null, 'Progress'));
+  const vs = h('div', 'seg views'); vs.setAttribute('role', 'tablist'); vs.setAttribute('aria-label', 'Progress view');
+  for (const v of VIEWS) {
+    const b = h('button', null, v.label); b.type = 'button'; b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(state.view === v.id)); b.setAttribute('aria-pressed', String(state.view === v.id));
+    b.addEventListener('click', () => { state.view = v.id; render(); }); vs.append(b);
+  }
+  scr.append(ab, vs, chipsRow(state, render), tiles(sessions), ...(state.view === 'all' ? allChartsView(sessions) : focusView(sessions)));
+  document.getElementById('phone').replaceChildren(statusBar(), scr, tabBar());
+}
+
+const btn = document.getElementById('themeBtn');
+function setTheme(t) { document.documentElement.dataset.theme = t; btn.textContent = t === 'dark' ? 'Switch to light' : 'Switch to dark'; }
+setTheme(params.get('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+btn.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+render();
+const shift = +params.get('shift') || 0;
+if (shift) document.body.style.marginTop = `-${shift}px`;
+
+</script>
+</body>
+</html>

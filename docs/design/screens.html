@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPL Tracker — Today, Plan, History, Data (design mock)</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --s1: #2a78d6; --s2: #eb6834; --good-text: #006300;
+    --warning: #fab219; --critical: #d03b3b; --border: rgba(11,11,11,.10); --chip: #efeeea; --stage: #e9e8e3;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+      --border: rgba(255,255,255,.10); --chip: #262624; --stage: #000;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+    --border: rgba(255,255,255,.10); --chip: #262624; --stage: #000;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--stage); color: var(--ink);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button { font: inherit; color: inherit; }
+
+  .topbar { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 20px 16px 0; }
+  .topbar h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .theme-toggle { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+
+  .stage { display: flex; gap: 40px; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 20px 16px 48px; }
+  .option { width: 390px; }
+  .option > h2 { font-size: 16px; margin: 0 0 2px; }
+  .option > p { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
+
+  .phone { width: 390px; background: var(--page); border-radius: 40px; border: 1px solid var(--border);
+           box-shadow: var(--shadow); overflow: clip; position: relative; }
+  .screen { padding: 8px 12px 16px; }
+  .statusbar { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px;
+               font-size: 14px; font-weight: 600; }
+
+  .appbar h2 { font-size: 30px; font-weight: 700; margin: 4px 4px 10px; letter-spacing: -0.01em; }
+
+  .chips { display: flex; gap: 6px; margin: 0 2px 10px; }
+  .chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px;
+          font-size: 13px; cursor: pointer; min-height: 32px; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; }
+  .tile .label { font-size: 12px; color: var(--ink-2); }
+  .tile .value { font-size: 24px; font-weight: 600; line-height: 1.2; }
+  .tile .sub { font-size: 12px; color: var(--muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-top: 10px; position: relative; }
+  .card h3 { font-size: 16px; font-weight: 600; margin: 0; }
+  .card .cap { font-size: 12px; color: var(--ink-2); margin: 2px 0 0; }
+  .lift-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .lift-now { text-align: right; }
+  .lift-now .v { font-size: 20px; font-weight: 600; line-height: 1.2; }
+  .delta { font-size: 12px; color: var(--good-text); white-space: nowrap; }
+  .delta.flat { color: var(--ink-2); }
+
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 10px 0 2px; }
+  .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+
+  .chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .chart:focus { outline: 2px solid var(--s1); outline-offset: 4px; border-radius: 6px; }
+
+  .tooltip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+             box-shadow: var(--shadow); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 150px; display: none; }
+  .tooltip .t-date { color: var(--muted); margin-bottom: 4px; }
+  .tooltip .t-row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .tooltip .t-v { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tooltip .t-n { color: var(--ink-2); }
+
+  details { margin-top: 8px; }
+  summary { font-size: 12px; color: var(--ink-2); cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th { text-align: left; font-weight: 500; color: var(--ink-2); font-size: 12px; }
+  th, td { padding: 7px 4px; border-bottom: 1px solid var(--grid); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  td .when { display: block; font-size: 11px; color: var(--muted); }
+
+  .seg { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--chip); border-radius: 12px; padding: 3px; margin-top: 10px; }
+  .seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px 2px; font-size: 12.5px; cursor: pointer; min-height: 36px; }
+  .seg button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+
+  .hero { font-size: 48px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; margin-top: 6px; }
+  .hero small { font-size: 20px; font-weight: 500; color: var(--ink-2); letter-spacing: 0; }
+  .mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .mini div { font-size: 12px; color: var(--ink-2); }
+  .mini b { display: block; font-size: 15px; color: var(--ink); font-weight: 600; }
+
+  .rows .row { display: grid; grid-template-columns: 1fr 70px 76px; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+  .rows .row:last-child { border-bottom: 0; }
+  .rows .name { font-size: 14px; }
+  .rows .now { text-align: right; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rows .now .delta { display: block; font-weight: 400; }
+
+  .watch .item { display: flex; gap: 10px; padding: 8px 0; align-items: flex-start; }
+  .watch .item + .item { border-top: 1px solid var(--grid); }
+  .watch .txt { font-size: 13.5px; }
+  .watch .txt b { font-weight: 600; }
+  .watch .txt span { display: block; color: var(--ink-2); font-size: 12.5px; }
+
+  .tabbar { position: sticky; bottom: 0; height: 74px; background: var(--surface); border-top: 1px solid var(--border);
+            display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 4px 18px; }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); }
+  .tab svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .tab.active { color: var(--s1); font-weight: 600; }
+
+  .today-head { margin: 4px 4px 10px; }
+  .kicker { font-size: 13px; color: var(--ink-2); display: flex; gap: 10px; align-items: center; }
+  .big { font-size: 27px; font-weight: 700; margin: 2px 0 6px; letter-spacing: -0.01em; }
+  .link { border: 0; background: none; color: var(--s1); font-weight: 600; padding: 0; cursor: pointer; font-size: 13px; }
+  .muted-link { color: var(--ink-2); }
+  .picker { border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--ink-2); width: 100%; text-align: left; min-height: 40px; }
+  .picker b { color: var(--s1); float: right; }
+  .banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--chip); border-radius: 12px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
+  .toggle-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font-size: 14px; min-height: 52px; }
+  .toggle-row.flat { border: 0; padding: 12px 0 0; background: none; }
+  .toggle-row .muted { display: block; font-size: 12px; }
+  .muted { color: var(--ink-2); font-size: 12.5px; }
+  .switch { width: 46px; height: 28px; border-radius: 999px; background: var(--axis); position: relative; flex: none; }
+  .switch span { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+  .ex-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .card.ex.compact { padding: 12px 14px; }
+  .pill { font-size: 11px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .pill.main { background: var(--chip); }
+  .swap { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer; min-height: 32px; white-space: nowrap; }
+  .swap.sm { padding: 3px 10px; min-height: 28px; }
+  .suggest { margin-top: 10px; background: var(--chip); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+  .suggest b { display: block; font-weight: 600; }
+  .suggest span { color: var(--ink-2); font-size: 12.5px; }
+  .suggest.up b { color: var(--good-text); }
+  .warm { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; }
+  .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .sets { margin-top: 10px; }
+  .set-row { display: grid; grid-template-columns: 46px 1fr 18px 1fr; align-items: center; gap: 8px; margin-top: 6px; }
+  .set-row.head { font-size: 11.5px; color: var(--muted); margin-top: 0; }
+  .set-row .n { font-size: 15px; font-weight: 600; text-align: center; line-height: 1.1; }
+  .set-row .n small { display: block; font-size: 9.5px; font-weight: 500; color: var(--ink-2); }
+  .set-row .x { text-align: center; color: var(--muted); }
+  .field { height: 48px; border-radius: 12px; border: 1px solid var(--border); background: var(--page); display: flex; align-items: center; justify-content: center; gap: 4px;
+           font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .field small { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+  .field.empty { color: var(--muted); font-weight: 400; font-size: 16px; }
+  .field.active { border: 2px solid var(--s1); }
+  .field.done { background: var(--chip); }
+  .caret { display: inline-block; width: 2px; height: 22px; background: var(--s1); margin-left: 2px; }
+  .set-row.dim .more-sets { grid-column: 2 / 5; font-size: 13px; color: var(--ink-2); }
+  .set-actions { display: flex; gap: 18px; margin-top: 10px; }
+  .add { width: 100%; margin-top: 10px; border: 1px dashed var(--axis); background: transparent; border-radius: 14px; padding: 12px; font-size: 14px; color: var(--ink-2); min-height: 48px; }
+  .save-wrap { position: sticky; bottom: 74px; padding: 12px 0 6px; background: linear-gradient(to bottom, transparent, var(--page) 30%); text-align: center; }
+  .save-wrap span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .save { width: 100%; border: 0; border-radius: 14px; background: var(--s1); color: #fff; font-size: 16px; font-weight: 600; padding: 14px; min-height: 52px; cursor: pointer; }
+  .btn { border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 9px 14px; font-size: 14px; min-height: 44px; cursor: pointer; }
+  .btn.wide { width: 100%; }
+  .btn.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .btn.danger { color: var(--critical); }
+  .dimmed { opacity: .35; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface); border-radius: 22px 22px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.18); padding: 10px 16px 96px; z-index: 3; }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--axis); margin: 0 auto 12px; }
+  .opt { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 13px 4px; border-bottom: 1px solid var(--grid); font-size: 15px; min-height: 48px; }
+  .opt.selected { font-weight: 600; }
+  .opt .check { color: var(--s1); font-size: 17px; }
+  .note { font-size: 12px; color: var(--muted); margin: 10px 0; }
+  .seg.four { grid-template-columns: repeat(4, 1fr); }
+  .seg.two { grid-template-columns: repeat(2, 1fr); width: 120px; margin-top: 0; }
+  .pad { margin-top: 8px; }
+  .rotation { display: flex; gap: 4px; margin: 14px 0 0; }
+  .rotation span { flex: 1; text-align: center; font-size: 11.5px; padding: 8px 2px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); line-height: 1.2; }
+  .rotation span.now { border: 2px solid var(--s1); font-weight: 600; }
+  .day-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card.day { padding: 12px 14px; }
+  .prow { display: grid; grid-template-columns: 1fr 64px 86px; align-items: center; gap: 6px; padding: 9px 0; border-top: 1px solid var(--grid); font-size: 14px; }
+  .prow:first-of-type { margin-top: 8px; }
+  .prow .rx { color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .prow .lock { font-size: 11.5px; color: var(--muted); text-align: right; }
+  .prow .swap { justify-self: end; }
+  .rules ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
+  .rules li { margin-bottom: 6px; } .rules b { color: var(--ink); }
+  .month { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 16px 4px 0; }
+  .card.hist { padding: 12px 14px; }
+  .hist-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+  .hline { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 7px 0; border-top: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  .hline:first-of-type { margin-top: 8px; }
+  .hline span:last-child { color: var(--ink-2); }
+  .sum { font-size: 12.5px; color: var(--ink-2); margin: 6px 0 0; }
+  .hist-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .tagoff { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--ink-2); }
+  .card.status p { margin: 0; } .card.status .muted { margin-top: 2px; }
+  .paste { margin-top: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 12px; padding: 10px; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .preview { margin-top: 10px; border-top: 1px solid var(--grid); padding-top: 8px; font-size: 13px; }
+  .preview p { margin: 4px 0; } .pv { color: var(--ink-2); }
+  .warnline { color: var(--ink); background: var(--chip); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; }
+  code { font: 12px ui-monospace, Menlo, monospace; background: var(--chip); padding: 1px 4px; border-radius: 4px; }
+  .setrow { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 14px; }
+  .setrow:first-of-type { margin-top: 6px; }
+  .danger-zone h3 { color: var(--critical); }
+  .danger-zone .btn { margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Today · Plan · History · Data — design mock (sample data)</h1>
+    <button class="theme-toggle" id="themeBtn" type="button">Switch to dark</button>
+  </div>
+
+  <div class="stage">
+
+    <!-- ============ TODAY ============ -->
+    <section class="option">
+      <h2>Today — logging a workout</h2>
+      <p>What you see at the gym. Weights are filled in for you; you only type reps.</p>
+      <div class="phone">
+        <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen">
+          <div class="today-head">
+            <div class="kicker">Tue 10/11/2026 <button class="link" type="button">Change date</button></div>
+            <h2 class="big">Day 1 of 6 · Pull A</h2>
+            <button class="picker" type="button">Doing a different workout? <b>Change ▾</b></button>
+          </div>
+
+          <div class="banner"><span>Last backup 01/11/2026</span><button class="link" type="button">Export now</button></div>
+
+          <label class="toggle-row">
+            <span><b>Off day</b><span class="muted">Bad sleep or food — misses won't count</span></span>
+            <span class="switch" aria-hidden="true"><span></span></span>
+          </label>
+
+          <!-- main lift -->
+          <div class="card ex">
+            <div class="ex-head">
+              <div><h3>Deadlift</h3><p class="cap">1×5+ · rest 3–5 min</p></div>
+              <span class="pill main">Main lift · fixed</span>
+            </div>
+            <div class="suggest up"><b>Add 5 kg today → 110 kg</b><span>Last time 31/10: 105 kg × 7</span></div>
+            <p class="warm">Warm-up: 20×10 · 55×10 · 77.5×5 · 100×3</p>
+            <div class="sets">
+              <div class="set-row head"><span>Set</span><span>Weight</span><span></span><span>Reps</span></div>
+              <div class="set-row"><span class="n">1<small>AMRAP</small></span><span class="field">110<small>kg</small></span><span class="x">×</span><span class="field reps done">8</span></div>
+            </div>
+            <p class="hint">AMRAP = as many good-form reps as you can.</p>
+          </div>
+
+          <!-- accessory, mid-range -->
+          <div class="card ex">
+            <div class="ex-head">
+              <div><h3>Lat pulldown</h3><p class="cap">3×8–12 · rest 1–3 min</p></div>
+              <button class="swap" type="button">⇄ Swap</button>
+            </div>
+            <div class="suggest"><b>Keep 45 kg</b><span>Last time 03/11: 10, 9, 9 — 8 reps to go before adding weight</span></div>
+            <div class="sets">
+              <div class="set-row"><span class="n">1</span><span class="field">45<small>kg</small></span><span class="x">×</span><span class="field reps done">11</span></div>
+              <div class="set-row"><span class="n">2</span><span class="field">45<small>kg</small></span><span class="x">×</span><span class="field reps active">10<i class="caret"></i></span></div>
+              <div class="set-row"><span class="n">3</span><span class="field">45<small>kg</small></span><span class="x">×</span><span class="field reps empty">8–12</span></div>
+            </div>
+            <div class="set-actions"><button class="link" type="button">+ Set</button><button class="link muted-link" type="button">− Set</button></div>
+          </div>
+
+          <!-- accessory, ready to add weight -->
+          <div class="card ex">
+            <div class="ex-head">
+              <div><h3>Face pull</h3><p class="cap">5×15–20 · rest 1–3 min</p></div>
+              <button class="swap" type="button">⇄ Swap</button>
+            </div>
+            <div class="suggest up"><b>Add 2.5 kg today → 20 kg</b><span>Last time 03/11: all 5 sets at 20 reps</span></div>
+            <div class="sets">
+              <div class="set-row"><span class="n">1</span><span class="field">20<small>kg</small></span><span class="x">×</span><span class="field reps empty">15–20</span></div>
+              <div class="set-row"><span class="n">2</span><span class="field">20<small>kg</small></span><span class="x">×</span><span class="field reps empty">15–20</span></div>
+              <div class="set-row dim"><span class="n">3–5</span><span class="more-sets">3 more sets</span></div>
+            </div>
+          </div>
+
+          <div class="card ex compact">
+            <div class="ex-head"><div><h3>Seated cable row</h3><p class="cap">3×8–12 · keep 45 kg · 6 reps to go</p></div><button class="swap" type="button">⇄ Swap</button></div>
+          </div>
+          <div class="card ex compact">
+            <div class="ex-head"><div><h3>Hammer curl · Dumbbell curl</h3><p class="cap">4×8–12 each · tap to open</p></div></div>
+          </div>
+
+          <button class="add" type="button">+ Add exercise</button>
+          <div class="save-wrap"><button class="save" type="button">Save workout</button><span>Saved as a draft while you go</span></div>
+        </div>
+        <nav class="tabbar" data-active="Today"></nav>
+      </div>
+    </section>
+
+    <!-- ============ TODAY: swap sheet ============ -->
+    <section class="option">
+      <h2>Today — Swap open</h2>
+      <p>Options from the Reddit post for that slot, plus your own. Your pick sticks for future workouts.</p>
+      <div class="phone" style="min-height: 820px">
+        <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen dimmed">
+          <div class="today-head">
+            <div class="kicker">Tue 10/11/2026</div>
+            <h2 class="big">Day 1 of 6 · Pull A</h2>
+          </div>
+          <div class="card ex"><div class="ex-head"><div><h3>Lat pulldown</h3><p class="cap">3×8–12</p></div></div></div>
+          <div class="card ex"><div class="ex-head"><div><h3>Face pull</h3><p class="cap">5×15–20</p></div></div></div>
+        </div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <h3>Swap: Vertical pull</h3>
+          <p class="cap">3×8–12 · applies to Day 1 and Day 4 from now on</p>
+          <div class="opt selected"><span>Lat pulldown</span><span class="check">✓</span></div>
+          <div class="opt"><span>Pull-up</span><span class="muted">bodyweight, add weight later</span></div>
+          <div class="opt"><span>Chin-up</span></div>
+          <div class="opt"><span>Custom…</span><span class="muted">type your own</span></div>
+          <p class="note">Past workouts keep what you logged.</p>
+          <button class="save" type="button">Done</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PLAN ============ -->
+    <section class="option">
+      <h2>Plan — the full program</h2>
+      <p>All six days, every exercise, swaps, and the goal setting from the post.</p>
+      <div class="phone">
+        <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen">
+          <div class="appbar"><h2>Plan</h2></div>
+
+          <div class="card">
+            <h3>Goal</h3>
+            <div class="seg four"><button aria-pressed="true">Standard</button><button>Strength</button><button>Endurance</button><button>Cutting</button></div>
+            <p class="cap pad">As written in the post: main lifts in 5s, accessories 8–12.</p>
+            <label class="toggle-row flat">
+              <span><b>Ab work</b><span class="muted">Adds 2 ab exercises on Day 1 and squat days</span></span>
+              <span class="switch" aria-hidden="true"><span></span></span>
+            </label>
+          </div>
+
+          <div class="rotation">
+            <span class="now">1 Pull A</span><span>2 Push A</span><span>3 Legs</span><span>4 Pull B</span><span>5 Push B</span><span>6 Legs</span>
+          </div>
+          <p class="cap pad">Rest whenever you like — the app follows the workouts you log, not the calendar.</p>
+
+          <div class="card day open">
+            <div class="day-head"><h3>Day 1 · Pull A</h3><span class="muted">6 exercises ▴</span></div>
+            <div class="prow"><span>Deadlift</span><span class="rx">1×5+</span><span class="lock">Main · fixed</span></div>
+            <div class="prow"><span>Lat pulldown</span><span class="rx">3×8–12</span><button class="swap sm">⇄</button></div>
+            <div class="prow"><span>Seated cable row</span><span class="rx">3×8–12</span><button class="swap sm">⇄</button></div>
+            <div class="prow"><span>Face pull</span><span class="rx">5×15–20</span><button class="swap sm">⇄</button></div>
+            <div class="prow"><span>Hammer curl</span><span class="rx">4×8–12</span><button class="swap sm">⇄</button></div>
+            <div class="prow"><span>Dumbbell curl</span><span class="rx">4×8–12</span><button class="swap sm">⇄</button></div>
+          </div>
+          <div class="card day"><div class="day-head"><h3>Day 2 · Push A</h3><span class="muted">Bench press · 7 exercises ▾</span></div></div>
+          <div class="card day"><div class="day-head"><h3>Day 3 · Legs</h3><span class="muted">Squat · 5 exercises ▾</span></div></div>
+          <div class="card day"><div class="day-head"><h3>Day 4 · Pull B</h3><span class="muted">Barbell row · 6 exercises ▾</span></div></div>
+          <div class="card day"><div class="day-head"><h3>Day 5 · Push B</h3><span class="muted">Overhead press · 7 exercises ▾</span></div></div>
+          <div class="card day"><div class="day-head"><h3>Day 6 · Legs</h3><span class="muted">Same as Day 3 ▾</span></div></div>
+
+          <div class="card rules">
+            <h3>The rules</h3>
+            <ul>
+              <li><b>Main lifts:</b> hit all your 5s → next time add 2.5 kg (deadlift 5 kg).</li>
+              <li><b>Accessories:</b> every set at the top of the range → add weight. Under the bottom → go lighter.</li>
+              <li><b>3 misses in a row</b> at the same weight → take 10% off and build back up.</li>
+              <li><b>Starting weight:</b> work up in sets of 5 until the bar slows, then take 2.5 kg off.</li>
+            </ul>
+          </div>
+        </div>
+        <nav class="tabbar" data-active="Plan"></nav>
+      </div>
+    </section>
+
+    <!-- ============ HISTORY ============ -->
+    <section class="option">
+      <h2>History — every workout</h2>
+      <p>Newest first. Tap one to see all sets, edit or delete it.</p>
+      <div class="phone">
+        <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen">
+          <div class="appbar"><h2>History</h2></div>
+          <div class="chips"><button class="chip" aria-pressed="true">All</button><button class="chip">Pull</button><button class="chip">Push</button><button class="chip">Legs</button></div>
+
+          <div class="month">November 2026</div>
+          <div class="card hist open">
+            <div class="hist-head"><div><b>Thu 05/11/2026</b><span class="muted"> · Day 6 · Legs</span></div><span class="muted">▴</span></div>
+            <div class="hline"><span>Squat</span><span>92.5 kg × 5, 5, 6</span></div>
+            <div class="hline"><span>Romanian deadlift</span><span>52.5 kg × 12, 11, 11</span></div>
+            <div class="hline"><span>Leg press</span><span>102.5 kg × 11, 11, 10</span></div>
+            <div class="hline"><span>Leg curl</span><span>32.5 kg × 12, 12, 11</span></div>
+            <div class="hline"><span>Calf raise</span><span>42.5 kg × 10, 10, 9, 9, 9</span></div>
+            <div class="hist-actions"><button class="btn" type="button">Edit</button><button class="btn danger" type="button">Delete</button></div>
+          </div>
+          <div class="card hist">
+            <div class="hist-head"><div><b>Wed 04/11/2026</b><span class="muted"> · Day 5 · Push B</span></div><span class="muted">▾</span></div>
+            <p class="sum">OHP 37.5×5,5,5,5,9 · Bench 40×11,10,10 · Incline 25×9,8,8 · +4 more</p>
+          </div>
+          <div class="card hist">
+            <div class="hist-head"><div><b>Tue 03/11/2026</b><span class="muted"> · Day 4 · Pull B</span></div><span class="tagoff">Off day</span></div>
+            <p class="sum">Row 60×5,5,5,5,6 · Pulldown 45×10,9,9 · Cable row 45×10,10,10 · +3 more</p>
+          </div>
+          <div class="card hist">
+            <div class="hist-head"><div><b>Sun 01/11/2026</b><span class="muted"> · Day 3 · Legs</span></div><span class="muted">▾</span></div>
+            <p class="sum">Squat 90×5,5,6 · RDL 52.5×11,11,10 · Leg press 102.5×10,10,9 · +2 more</p>
+          </div>
+          <div class="month">October 2026</div>
+          <div class="card hist">
+            <div class="hist-head"><div><b>Sat 31/10/2026</b><span class="muted"> · Day 2 · Push A</span></div><span class="muted">▾</span></div>
+            <p class="sum">Bench 65×5,5,4,4,3 · OHP 27.5×10,9,9 · Incline 25×9,8,8 · +4 more</p>
+          </div>
+        </div>
+        <nav class="tabbar" data-active="History"></nav>
+      </div>
+    </section>
+
+    <!-- ============ DATA ============ -->
+    <section class="option">
+      <h2>Data — backup, import, settings</h2>
+      <p>Everything stays on the phone. Backup is one file you can save or AirDrop.</p>
+      <div class="phone">
+        <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen">
+          <div class="appbar"><h2>Data</h2></div>
+
+          <div class="card status">
+            <p><b>Saved on this phone only</b></p>
+            <p class="muted">42 workouts · last backup 01/11/2026 (9 days ago)</p>
+          </div>
+
+          <div class="card">
+            <h3>Backup</h3>
+            <button class="save" type="button">Export backup (CSV)</button>
+            <p class="cap pad">Opens the share sheet → Save to Files or AirDrop to your Mac. The file opens in Numbers too.</p>
+            <button class="btn wide" type="button">Copy as text</button>
+          </div>
+
+          <div class="card">
+            <h3>Import</h3>
+            <p class="cap">Paste workouts as text, or choose a backup file.</p>
+            <div class="paste">10/11/2026 Pull A<br>Deadlift 110x8<br>Lat pulldown 45x11 45x10 45x9<br>Face pull 20x16 x5<br>Zercher squat 60x8 x3</div>
+            <div class="row2"><button class="btn" type="button">Choose file</button><button class="btn primary" type="button">Preview</button></div>
+            <div class="preview">
+              <p><b>1 workout found</b> · new</p>
+              <p class="pv">10/11/2026 · Day 1 · Pull A — Deadlift 110×8 · Lat pulldown 45×11,10,9 · Face pull 20×16 ×5 · Zercher squat 60×8 ×3</p>
+              <p class="warnline">⚠ Line 5: "Zercher squat" isn't in the program — saved as an extra exercise.</p>
+              <button class="save" type="button">Import 1 workout</button>
+            </div>
+            <details><summary>How to write workouts</summary><p class="cap pad">One line per exercise: <code>Name weightxreps</code>. <code>45x12 x3</code> = 3 sets of 12. <code>3x12@45</code> works too. Dates are day first: 10/11/2026.</p></details>
+          </div>
+
+          <div class="card">
+            <h3>Settings</h3>
+            <div class="setrow"><span>Units</span><div class="seg two"><button aria-pressed="true">kg</button><button>lb</button></div></div>
+            <div class="setrow"><span>Dates</span><span class="muted">DD/MM/YYYY</span></div>
+          </div>
+
+          <div class="card danger-zone">
+            <h3>Delete all data</h3>
+            <p class="cap">Removes every workout from this phone. Export a backup first.</p>
+            <button class="btn danger" type="button">Delete everything…</button>
+          </div>
+        </div>
+        <nav class="tabbar" data-active="Data"></nav>
+      </div>
+    </section>
+  </div>
+
+<script>
+const TAB_ICONS = {
+  Today: '<rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>',
+  Plan: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+  Progress: '<path d="M4 19h16M5 15l4-4 3 3 6-7"/>',
+  History: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  Data: '<path d="M12 4v11M8 11l4 4 4-4M5 19h14"/>',
+};
+for (const bar of document.querySelectorAll('.tabbar')) {
+  for (const name of Object.keys(TAB_ICONS)) {
+    const t = document.createElement('div'); t.className = `tab${bar.dataset.active === name ? ' active' : ''}`;
+    t.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${TAB_ICONS[name]}</svg>`; // static markup only
+    const s = document.createElement('span'); s.textContent = name; t.append(s); bar.append(t);
+  }
+}
+const params = new URLSearchParams(location.search);
+const btn = document.getElementById('themeBtn');
+function setTheme(t) { document.documentElement.dataset.theme = t; btn.textContent = t === 'dark' ? 'Switch to light' : 'Switch to dark'; }
+setTheme(params.get('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+btn.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+const shift = +params.get('shift') || 0; if (shift) document.body.style.marginTop = `-${shift}px`;
+const only = params.get('only'); if (only) document.querySelectorAll('.option').forEach((o, i) => { if (String(i) !== only) o.style.display = 'none'; });
+</script>
+
+</body>
+</html>
