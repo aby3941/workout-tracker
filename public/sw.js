@@ -1,5 +1,5 @@
 // Offline service worker. Bump CACHE on every deploy so installed phones pick up the new files.
-const CACHE = 'ppl-v4';
+const CACHE = 'ppl-v5';
 
 // Every file in public/ (keep in sync when files are added or removed).
 const PRECACHE = [

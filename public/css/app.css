@@ -23,8 +23,8 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
-       /* focus / scrollIntoView keep fields clear of the tab bar and Today's sticky Save button */
-       scroll-padding-bottom: calc(var(--tabbar-h) + var(--safe-b) + 84px); }
+       /* focus / scrollIntoView keep fields clear of the fixed tab bar */
+       scroll-padding-bottom: calc(var(--tabbar-h) + var(--safe-b) + 16px); }
 body { margin: 0; background: var(--page); color: var(--ink); min-height: 100vh;
        font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; overflow-wrap: break-word; }
 button { font: inherit; color: inherit; cursor: pointer; }
@@ -251,8 +251,8 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .note-field span { display: block; margin: 0 4px 4px; }
 .note-field textarea { width: 100%; font: inherit; font-size: 16px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; resize: vertical; }
 .note-field textarea:focus { outline: none; border-color: var(--s1); }
-.save-wrap { position: sticky; bottom: calc(var(--tabbar-h) + var(--safe-b)); padding: 6px 0 6px; margin-top: 4px;
-             background: linear-gradient(to bottom, transparent, var(--page) 30%); text-align: center; z-index: 2; }
+/* At the end of the workout, in the page flow (not pinned) — the owner's choice. */
+.save-wrap { padding: 8px 0 4px; margin-top: 12px; text-align: center; }
 .save-wrap span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 
 /* ---------- Plan ---------- */

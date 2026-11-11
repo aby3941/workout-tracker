@@ -43,6 +43,8 @@ Product decisions made while planning and building the app (10/11/2026), and why
 | Approved mocks: [`design/progress.html`](design/progress.html) and [`design/screens.html`](design/screens.html) | Designed and approved before the screens were built. |
 | Progress has two views behind a switch, *All charts* and *One at a time*, inside the Progress tab (not a 6th tab) | The owner wanted both. Six tabs are cramped on a phone. |
 | Blue = weight, orange = est. 1RM / total reps; checked for colour-blind readers in light and dark | Readable for everyone, consistent across charts. |
+| App icon: a bold white dumbbell on a slant over blue (option A); the browser tab gets its own rounded 16/32 px icon (11/11/2026) | The first icon read as an "H" on the home screen and as a plain blue square in a tab. |
+| **Save workout sits at the end of the workout page, after the Note box, not pinned to the bottom of the screen** (11/11/2026) | The owner's preference: nothing covers the exercises while logging. The draft autosaves anyway, and the e2e check `iphone-basics` guards the placement. |
 
 ## Changes after review
 

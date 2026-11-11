@@ -1069,6 +1069,35 @@ export const scenarios = [
       for (const tab of tabs) expect(tab.h >= 44 && tab.w >= 44, `Tab "${tab.name}" is ${tab.w}×${tab.h}px; needs ≥ 44px`);
       const save = await t.waitForRole('button', 'Save workout', { within: 'document' });
       expect(save.h >= 44, `"Save workout" is ${save.h}px tall; needs ≥ 44px`);
+
+      t.step('Save workout sits at the end of the workout, not pinned (owner decision 11/11/2026)');
+      const placement = await t.evaluate(() => {
+        const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save workout');
+        const pinned = [];
+        for (let el = btn; el && el !== document.body; el = el.parentElement) {
+          const pos = getComputedStyle(el).position;
+          if (pos === 'sticky' || pos === 'fixed') pinned.push(`${el.tagName.toLowerCase()}.${el.className} (${pos})`);
+        }
+        const note = document.querySelector('textarea[aria-label="Note"]');
+        window.scrollTo(0, 0);
+        return {
+          pinned,
+          afterNote: !!note && !!(note.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING),
+          topAtStart: Math.round(btn.getBoundingClientRect().top), vh: innerHeight,
+        };
+      });
+      expect(placement.pinned.length === 0, `"Save workout" must not be pinned; pinned by ${placement.pinned.join(', ')}`);
+      expect(placement.afterNote, '"Save workout" should come after the Note field, at the end of the workout');
+      expect(placement.topAtStart > placement.vh, `On a full workout "Save workout" should be off-screen until you scroll to the end (top ${placement.topAtStart} vs viewport ${placement.vh})`);
+      const reach = await t.evaluate(() => {
+        window.scrollTo(0, document.documentElement.scrollHeight);
+        const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save workout');
+        const nav = document.querySelector('nav[aria-label="Sections"]').getBoundingClientRect();
+        const r = btn.getBoundingClientRect();
+        window.scrollTo(0, 0);
+        return { bottom: Math.round(r.bottom), navTop: Math.round(nav.top) };
+      });
+      expect(reach.bottom <= reach.navTop, `Scrolled to the end, "Save workout" must sit fully above the tab bar (bottom ${reach.bottom} vs tab bar top ${reach.navTop})`);
       const inside = await t.evaluate(() => {
         const nav = document.querySelector('nav[aria-label="Sections"]');
         const r = nav.getBoundingClientRect();
@@ -1271,6 +1300,10 @@ export const scenarios = [
       await expectToday(t, 1, 'Pull A');
       await fillSets(t, 'Deadlift', reps(5));
       await sleep(400);
+      // Save sits at the end of the workout (not pinned), so scroll to it as a user would, then tap it twice.
+      await t.evaluate(() => [...document.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Save workout').scrollIntoView({ block: 'center', behavior: 'instant' }));
+      await sleep(150);
       const btn = await t.waitForRole('button', 'Save workout', { within: 'document' });
       await t.clearStatusLog();
       await t.mouseClick(btn.x, btn.y);
