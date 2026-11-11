@@ -1,3 +1,5 @@
+<img src="public/icons/icon-192.png" width="96" height="96" alt="PPL Tracker icon: a white dumbbell on blue" align="right">
+
 # PPL Tracker
 
 An offline iPhone home-screen web app for the r/Fitness **"A Linear Progression Based PPL Program for Beginners"** (Metallicadpa PPL). It plans each workout, fills in the weights, applies the program's progression and deload rules, and shows progress over time. No accounts, no server, no network: all data stays on the phone, with a CSV backup the user can save or AirDrop.
@@ -65,7 +67,7 @@ public/                 ← the deployed site (and only this folder)
     app.js              boot, routing between tabs, saving, service worker, banners
     ui/                 one module per screen + shared sheets, DOM helpers, chart interaction
 tests/                  unit tests (*.test.js) and tests/e2e/ (browser tests + harness)
-tools/make-icons.mjs    regenerates the PNG icons with headless Chrome (not deployed)
+tools/make-icons.mjs    regenerates every icon + favicon.ico (headless Chrome + sips; not deployed)
 docs/                   SPEC.md, DECISIONS.md, design/ (approved mocks), screenshots/
 ```
 
@@ -92,3 +94,7 @@ Cloudflare Pages is connected to this repo: framework none, no build command, ou
 ## Credits
 
 Training program: "A Linear Progression Based PPL Program for Beginners" by u/Metallicadpa on r/Fitness. This app is an independent tracker for it.
+
+## License
+
+The code is released under the [MIT License](LICENSE): you're free to use, copy, change and share it, as long as the copyright and licence notice stay with it. The training program itself belongs to its author; the license covers this app's code and docs.
