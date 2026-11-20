@@ -50,10 +50,14 @@ describe('entriesFor', () => {
     ]);
   });
 
-  test('combines repeated entries of the same exercise+role in one session', () => {
-    const items = entriesFor(data, 'lateralRaise', 'accessory');
-    assert.equal(items.length, 1);
-    assert.deepEqual(items[0].sets, [...rep(3, 10, 15), ...sets([12.5, 12], [12.5, 11], [12.5, 10])]);
+  // Changed for §17.1 (20/11/2026): repeated entries are separate tracks, no longer combined.
+  test('repeated entries of the same exercise+role in one session are separate tracks (§17.1)', () => {
+    const first = entriesFor(data, 'lateralRaise', 'accessory');
+    assert.equal(first.length, 1);
+    assert.deepEqual(first[0].sets, rep(3, 10, 15));
+    const second = entriesFor(data, 'lateralRaise', 'accessory', 1);
+    assert.equal(second.length, 1);
+    assert.deepEqual(second[0].sets, sets([12.5, 12], [12.5, 11], [12.5, 10]));
   });
 
   test('no matching history → []', () => {
@@ -260,37 +264,39 @@ describe('deloadWeight', () => {
 // ---------------------------------------------------------------- suggestAccessory
 
 describe('suggestAccessory', () => {
-  const lp = (date, w, repsList, opts) => one(date, 'pullA', 'latPulldown', w, repsList, opts);
+  // Dumbbell row, a free weight: the default accessory step is 2.5 kg / 5 lb. (Was Lat pulldown, which §17.2,
+  // 20/11/2026, makes a machine with a 5 kg / 10 lb step — machine steps are covered in steps.test.js.)
+  const lp = (date, w, repsList, opts) => one(date, 'pullA', 'dbRow', w, repsList, opts);
 
   test('no history → start', () => {
-    assert.deepEqual(suggestAccessory([], 'latPulldown', SLOT_8_12, 'kg'), { weight: null, action: 'start', last: null });
+    assert.deepEqual(suggestAccessory([], 'dbRow', SLOT_8_12, 'kg'), { weight: null, action: 'start', last: null });
     assert.deepEqual(suggestAccessory([], 'abWheel', SLOT_ABS, 'kg'), { weight: null, action: 'start', last: null });
   });
 
   test('all prescribed sets at the top of the range → add the accessory increment', () => {
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 13, 14])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12, 12])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 100, [12, 12, 12])], 'latPulldown', SLOT_8_12, 'lb')), { weight: 105, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12])], 'dbRow', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 13, 14])], 'dbRow', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12, 12])], 'dbRow', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 100, [12, 12, 12])], 'dbRow', SLOT_8_12, 'lb')), { weight: 105, action: 'increase' });
   });
 
   test('not enough sets, or a set below the top → keep', () => {
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 11])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [8, 8, 8])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12])], 'dbRow', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 11])], 'dbRow', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [8, 8, 8])], 'dbRow', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
   });
 
   test('any set below the bottom → drop the accessory increment', () => {
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [10, 8, 7])], 'latPulldown', SLOT_8_12, 'kg')), { weight: 42.5, action: 'decrease' });
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 100, [9, 7, 6])], 'latPulldown', SLOT_8_12, 'lb')), { weight: 95, action: 'decrease' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [10, 8, 7])], 'dbRow', SLOT_8_12, 'kg')), { weight: 42.5, action: 'decrease' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 100, [9, 7, 6])], 'dbRow', SLOT_8_12, 'lb')), { weight: 95, action: 'decrease' });
   });
 
   test('off day: no decrease', () => {
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [7, 7, 7], { offDay: true })], 'latPulldown', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [7, 7, 7], { offDay: true })], 'dbRow', SLOT_8_12, 'kg')), { weight: 45, action: 'keep' });
   });
 
   test('off day with every set at the top still increases', () => {
-    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12], { offDay: true })], 'latPulldown', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory([lp('2026-11-10', 45, [12, 12, 12], { offDay: true })], 'dbRow', SLOT_8_12, 'kg')), { weight: 47.5, action: 'increase' });
   });
 
   test('no rep target (abs) → none, weight w', () => {
@@ -308,13 +314,13 @@ describe('suggestAccessory', () => {
   });
 
   test('w is the max weight in the latest item', () => {
-    const data = [session('2026-11-10', 'pullA', [entry('latPulldown', sets([45, 12], [47.5, 12], [45, 12]))])];
-    assert.deepEqual(pickAcc(suggestAccessory(data, 'latPulldown', SLOT_8_12, 'kg')), { weight: 50, action: 'increase' });
+    const data = [session('2026-11-10', 'pullA', [entry('dbRow', sets([45, 12], [47.5, 12], [45, 12]))])];
+    assert.deepEqual(pickAcc(suggestAccessory(data, 'dbRow', SLOT_8_12, 'kg')), { weight: 50, action: 'increase' });
   });
 
   test('only the latest item decides; last is that item', () => {
     const data = [lp('2026-11-10', 45, [11, 10, 10]), lp('2026-11-03', 45, [12, 12, 12])];
-    const r = suggestAccessory(data, 'latPulldown', SLOT_8_12, 'kg');
+    const r = suggestAccessory(data, 'dbRow', SLOT_8_12, 'kg');
     assert.deepEqual(pickAcc(r), { weight: 45, action: 'keep' });
     assert.equal(r.last.date, '2026-11-10');
   });
@@ -336,24 +342,27 @@ describe('suggestAccessory', () => {
     assert.equal(suggestAccessory(lb, 'deadlift', SLOT_8_12, 'lb').weight, 230);
   });
 
-  test('combined entries in one session (side1 + side2 lateral raises)', () => {
+  // Changed for §17.1 (20/11/2026): side1 and side2 lateral raises are separate tracks, no longer combined.
+  test('side1 + side2 lateral raises in one session are separate tracks (§17.1)', () => {
     const allTop = [session('2026-11-10', 'pushA', [
       entry('lateralRaise', rep(3, 10, 20)),
       entry('tricepsPushdown', rep(3, 25, 12)),
       entry('lateralRaise', rep(3, 10, 20)),
     ])];
     assert.deepEqual(pickAcc(suggestAccessory(allTop, 'lateralRaise', SLOT_15_20, 'kg')), { weight: 12.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory(allTop, 'lateralRaise', SLOT_15_20, 'kg', { occurrence: 1 })), { weight: 12.5, action: 'increase' });
     const oneLow = [session('2026-11-10', 'pushA', [
       entry('lateralRaise', rep(3, 10, 20)),
       entry('lateralRaise', sets([10, 16], [10, 15], [10, 12])),
     ])];
-    assert.deepEqual(pickAcc(suggestAccessory(oneLow, 'lateralRaise', SLOT_15_20, 'kg')), { weight: 7.5, action: 'decrease' });
+    assert.deepEqual(pickAcc(suggestAccessory(oneLow, 'lateralRaise', SLOT_15_20, 'kg')), { weight: 12.5, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory(oneLow, 'lateralRaise', SLOT_15_20, 'kg', { occurrence: 1 })), { weight: 7.5, action: 'decrease' });
   });
 
   test('sorts unsorted input itself and does not mutate it', () => {
     const data = [lp('2026-11-10', 47.5, [12, 12, 12]), lp('2026-11-01', 40, [6, 6, 6]), lp('2026-11-05', 45, [12, 12, 12])];
     const before = clone(data);
-    assert.deepEqual(pickAcc(suggestAccessory(data, 'latPulldown', SLOT_8_12, 'kg')), { weight: 50, action: 'increase' });
+    assert.deepEqual(pickAcc(suggestAccessory(data, 'dbRow', SLOT_8_12, 'kg')), { weight: 50, action: 'increase' });
     assert.deepEqual(data, before);
   });
 });

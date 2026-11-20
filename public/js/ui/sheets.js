@@ -14,6 +14,22 @@ function updateInert() {
   for (const el of background()) el.inert = open;
   stack.forEach((entry, i) => { entry.layer.inert = i !== stack.length - 1; });
   document.documentElement.classList.toggle('sheet-open', open);
+  fitToKeyboard();
+}
+
+/**
+ * Keep open sheets above the iPhone keyboard: while the keyboard is up (the visual viewport is shorter than the
+ * window) the sheet layers take the visible area only, so a search box and the list under it stay in view.
+ * Without a keyboard nothing is changed.
+ */
+function fitToKeyboard() {
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  const up = Boolean(vv && stack.length && vv.height < window.innerHeight - 1);
+  for (const { layer } of stack) {
+    layer.classList.toggle('kb', up);
+    layer.style.top = up ? `${vv.offsetTop}px` : '';
+    layer.style.height = up ? `${vv.height}px` : '';
+  }
 }
 
 function cancelTop() {
@@ -25,7 +41,7 @@ function cancelTop() {
 
 let keysBound = false;
 
-/** Escape cancels the top sheet (bound on first use, so importing this module touches nothing). */
+/** Escape cancels the top sheet; the keyboard fit follows the visual viewport (bound on first use, so importing this module touches nothing). */
 function bindKeys() {
   if (keysBound) return;
   keysBound = true;
@@ -35,6 +51,20 @@ function bindKeys() {
       cancelTop();
     }
   });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitToKeyboard);
+    window.visualViewport.addEventListener('scroll', fitToKeyboard);
+  }
+}
+
+/**
+ * Option lists in sheets answer the first tap (§17.5): pressing an option button does not move focus, so an open
+ * iPhone keyboard stays where it is and nothing shifts under the finger before the click lands.
+ * @param {Element|null} container
+ */
+export function keepFocusOnTap(container) {
+  if (!container) return;
+  container.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
 }
 
 /**

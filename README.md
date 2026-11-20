@@ -16,14 +16,17 @@ An offline iPhone home-screen web app for the r/Fitness **"A Linear Progression 
 - **Weights filled in for you:**
   - main lifts go up 2.5 kg (deadlift 5 kg) after a clean session;
   - after 3 misses in a row at the same weight, 10% comes off;
-  - accessories go up once every set hits the top of the rep range;
+  - accessories go up once every set hits the top of the rep range: 2.5 kg, or 5 kg on machines and cables;
+  - an exercise done twice in a workout (the two lateral raises on Push days) keeps two separate histories;
+  - plank is timed: aim for your shortest hold + 5 s, and 60 s on every set adds a plate;
   - the main lift shows a warm-up ramp;
   - an off-day switch stops a bad session counting as a miss.
-- **Set weight:** sets the weight for any exercise's next session, once. After that the rules take over. The same list sets starting weights on first open.
-- **Swaps:** the substitutions from the Reddit post, plus custom names. Also goals (standard / strength / endurance / cutting) and an optional ab add-on.
+- **Weights are the total:** barbell cards say "Total weight" and show the plates for each side ("= 20 kg bar + 21.25 kg each side"; not on EZ-bar or landmine lifts, whose bar is different); machines show the stack, dumbbells one dumbbell, bodyweight exercises the weight you add.
+- **Set weight:** sets the weight for any exercise's next session, once. After that the rules take over. The same sheet sets the exercise's own weight step (it stays until you change it), and the same list sets starting weights on first open.
+- **Swaps:** the substitutions from the Reddit post, plus custom names. Also goals (standard / strength / endurance / cutting) and an optional ab add-on. "+ Add exercise" searches the list as you type; the new card opens on screen.
 - **Progress:** two views. *All charts* has a card per exercise; *One at a time* shows one big chart plus the full exercise list. Main lifts chart working weight and estimated 1-rep max; accessories chart weight and total reps against the "add weight" target. Also a watch list, personal bests and weekly volume.
 - **Backup:** export a CSV through the iOS share sheet; "Copy as text" copies a readable version. Import takes that CSV, or free text like `Deadlift 100x5 x3`, and shows a preview with warnings by line number first.
-- **Units and dates:** kg by default with an lb switch that converts saved weights. Dates show as DD/MM/YYYY, and typed numeric dates are always read day-first.
+- **Settings:** kg by default with an lb switch that converts saved weights; the barbell weight (20 kg / 45 lb by default) used for the plates and the warm-up. Dates show as DD/MM/YYYY, and typed numeric dates are always read day-first.
 
 ## Run it locally
 
@@ -40,9 +43,9 @@ The service worker (offline mode) works on `127.0.0.1`/`localhost` and on HTTPS.
 
 | Command | What it runs | Needs |
 |---|---|---|
-| `npm test` | 392 unit tests for every logic module (Node's built-in runner) | Node 22+ (developed on 24) |
+| `npm test` | 492 unit tests for every logic module (Node's built-in runner) | Node 22+ (developed on 24) |
 | `TZ=Asia/Kolkata npm test` | the same, in another time zone (date logic must not shift) | |
-| `node tests/e2e/run.js` | 24 end-to-end scenarios in headless Chrome at iPhone size, plus "no outside requests" and "no console errors" | Google Chrome (set `CHROME_PATH` if it isn't in /Applications) |
+| `node tests/e2e/run.js` | 33 end-to-end scenarios in headless Chrome at iPhone size, plus "no outside requests" and "no console errors" | Google Chrome (set `CHROME_PATH` if it isn't in /Applications) |
 | `node tests/e2e/run.js swap offline` | only the scenarios whose id contains those words | |
 | `node tests/e2e/selfcheck.js` | checks the e2e harness itself | |
 

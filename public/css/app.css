@@ -168,6 +168,9 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
          padding: 10px 16px calc(18px + var(--safe-b)); }
 .sheet:focus { outline: none; }
 .sheet.tall { max-height: 92vh; max-height: 92dvh; }
+/* iPhone keyboard up: the layer is sized to the visible area (sheets.js), the sheet fits inside it */
+.sheet-layer.kb { bottom: auto; }
+.sheet-layer.kb .sheet, .sheet-layer.kb .sheet.tall { max-height: calc(100% - 8px); }
 .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--axis); margin: 0 auto 12px; }
 .sheet-title { font-size: 17px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; }
 .sheet-text { font-size: 13.5px; color: var(--ink-2); margin: 8px 0; }
@@ -175,7 +178,7 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .sheet-actions .btn { flex: 1; }
 .opts { margin-top: 6px; }
 .opt { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 4px; border: 0; border-bottom: 1px solid var(--grid);
-       background: none; font-size: 15px; min-height: 48px; text-align: left; }
+       background: none; font-size: 15px; min-height: 48px; text-align: left; touch-action: manipulation; }
 .opt.selected { font-weight: 600; }
 .opt .check { color: var(--s1); width: 18px; height: 18px; stroke-width: 2.2; }
 .opt .muted { font-weight: 400; text-align: right; }
@@ -185,7 +188,9 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .custom-row .btn, .row-input .btn { flex: none; }
 .note { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
 .group-label { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 14px 4px 0; }
-.pick-list .opt { min-height: 46px; padding: 10px 4px; }
+.pick-list .opt { min-height: 48px; padding: 10px 4px; }
+.add-hint { margin: 6px 2px 0; }
+.pick-list .no-match { margin: 14px 4px 0; }
 .input-unit { display: flex; align-items: center; gap: 8px; }
 .input-unit span { color: var(--ink-2); font-size: 14px; }
 .big-input { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -227,6 +232,10 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .suggest.up .ic-up { color: var(--good); }
 .suggest .setw { flex: none; font-size: 12.5px; }
 .warm { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+.plates { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+/* a just-added card (Add exercise), briefly */
+.card.ex { transition: box-shadow .3s; }
+.card.ex.flash { box-shadow: 0 0 0 2px var(--s1); }
 .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .sets { margin-top: 10px; }
 .set-row { display: grid; grid-template-columns: 46px 1fr 18px 1fr; align-items: center; gap: 8px; margin-top: 6px; }
@@ -239,7 +248,7 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .field input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--ink); text-align: center; padding: 0;
                font: inherit; font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .field input:focus { outline: none; }
-.field input.w { flex: 0 1 auto; width: calc(var(--len, 2) * 0.6em + 4px); text-align: right; }
+.field input.w, .field input.fit { flex: 0 1 auto; width: calc(var(--len, 2) * 0.6em + 4px); text-align: right; }
 .field input::placeholder { color: var(--muted); font-weight: 400; font-size: 16px; }
 .field small { font-size: 12px; font-weight: 500; color: var(--ink-2); flex: none; position: relative; top: 3px; }
 .field:focus-within { border-color: var(--s1); box-shadow: inset 0 0 0 1px var(--s1); }
@@ -305,6 +314,9 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .help p { margin: 0 0 6px; }
 .setrow { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 14px; min-height: 52px; }
 .setrow:first-of-type { margin-top: 6px; }
+.setrow label { min-width: 0; padding-right: 10px; }
+.setrow label .sub { display: block; font-size: 12px; margin-top: 1px; }
+.setrow .input-unit.sm { flex: none; }
 .danger-zone h2 { color: var(--critical); }
 .danger-zone .btn { margin-top: 8px; }
 

@@ -418,6 +418,124 @@ async function expectNoSideScroll(t, where) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Batch 1 helpers (§17)
+// ---------------------------------------------------------------------------------------------
+
+/** seedState plus Batch 1 fields: settings overrides (abs, barWeight …) and `steps`. */
+function seedStateWith(sessionList, { settings = {}, steps, ...rest } = {}) {
+  const s = seedState(sessionList, rest);
+  return { ...s, settings: { ...s.settings, ...settings }, ...(steps ? { steps } : {}) };
+}
+
+/**
+ * The index-th visible card whose aria-label starts with `prefix` (DOM order), for exercises that appear
+ * twice on a day (two "Lateral raise" cards). Serialisable, so it works in t.* calls and in-page scopes.
+ */
+const nthCard = (prefix, index) => ({ name: { regex: `^${escapeRe(prefix)}` }, index });
+
+/** Wait for the `.suggest-headline` text of the card at `within` (an nthCard / {name}) to match. */
+async function waitHeadlineWithin(t, within, matcher, label) {
+  const m = matcher instanceof RegExp ? { regex: matcher.source, flags: matcher.flags } : typeof matcher === 'string' ? { exact: matcher } : matcher;
+  const r = await t.poll((lib, w, mm) => {
+    const sec = lib.scope(w);
+    if (!sec) return { pending: true, why: 'no such visible card' };
+    const h = sec.querySelector('.suggest-headline');
+    if (!h) return { pending: true, why: 'the card has no .suggest-headline element' };
+    const text = lib.norm(h.textContent);
+    return lib.matches(text, mm) ? { text } : { pending: true, why: `headline is ${JSON.stringify(text)}` };
+  }, [within, m], { what: `the suggestion headline of ${label} to be ${matcher instanceof RegExp ? matcher : JSON.stringify(matcher)}` });
+  return r.text;
+}
+
+/** Open the card at `within` (tapping it open if needed) until its "Set 1 reps" box shows. */
+async function openCardWithin(t, within, label, probe = 'Set 1 reps') {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (await t.fieldVisible(probe, { within })) return;
+    await expand(t, within);
+    const until = Date.now() + 2500;
+    while (Date.now() < until) {
+      if (await t.fieldVisible(probe, { within })) return;
+      await sleep(100);
+    }
+  }
+  throw new E2EError(`${label} never showed a field named "${probe}"\n${await t.describe()}`);
+}
+
+async function expectSetWeightsWithin(t, within, label, weight, count) {
+  for (let n = 1; n <= count; n++) {
+    const v = await t.value(`Set ${n} weight`, { within });
+    expect(Number(v) === weight && v.trim() !== '', `${label} "Set ${n} weight" should be pre-filled with ${weight}, got ${JSON.stringify(v)}`);
+  }
+}
+
+/** Poll the stored state until `check(state)` is true (saves may be debounced). */
+async function waitStored(t, what, check, timeout = 4000) {
+  const until = Date.now() + timeout;
+  let st = null;
+  while (Date.now() < until) {
+    st = await t.getJSON(STORAGE_KEY);
+    if (st && check(st)) return st;
+    await sleep(100);
+  }
+  throw new E2EError(`Stored state never showed ${what}; last stored: ${JSON.stringify(st && { settings: st.settings, steps: st.steps, choices: st.choices }).slice(0, 400)}`);
+}
+
+/** Pick a workout from "Doing a different workout? Change". */
+async function pickDay(t, label) {
+  t.step(`Pick ${label}`);
+  await t.click('Change', { within: 'document' });
+  await t.waitForRole('dialog', 'Choose the workout');
+  await clickOption(t, label, { role: 'dialog', name: 'Choose the workout' });
+  await t.waitGone('dialog', 'Choose the workout');
+}
+
+/** Like clickInside, but the button itself is pressed with a real touch tap. */
+async function tapInside(t, container, button, opts = {}) {
+  if (!(await t.exists('button', button, { within: container, index: opts.index }))) await expand(t, container);
+  await t.tap(button, { within: container, ...opts });
+}
+
+/** A text box (input/textarea/contenteditable) has focus — on iPhone that means the keyboard is up. */
+const focusedTextEntry = (t) => t.evaluate((lib) => {
+  const a = document.activeElement;
+  if (!a || a === document.body) return null;
+  if (a.isContentEditable || lib.isTextEntry(a)) return `${a.tagName.toLowerCase()} "${lib.accName(a) || a.getAttribute('placeholder') || ''}"`;
+  return null;
+});
+
+/** Every named option button in the dialog is at least `min` px tall (§17.5: ≥ 48 px rows). */
+async function expectOptionHeights(t, dialogName, names, min = 48) {
+  const bad = await t.evaluate((lib, dn, list, mn) => {
+    const d = lib.dialogs().find((x) => lib.accName(x) === dn);
+    if (!d) return [`dialog "${dn}" not found`];
+    const buttons = [...d.querySelectorAll('button,[role="button"],[role="option"],[role="radio"]')].filter(lib.visible);
+    const out = [];
+    for (const n of list) {
+      const b = buttons.find((x) => lib.accName(x) === n) || buttons.find((x) => lib.accName(x).startsWith(n));
+      if (!b) { out.push(`${n}: not found`); continue; }
+      const h = b.getBoundingClientRect().height;
+      if (h < mn) out.push(`${n}: ${Math.round(h)}px`);
+    }
+    return out;
+  }, dialogName, names, min);
+  expect(bad.length === 0, `"${dialogName}" option rows must be ≥ ${min}px tall buttons (§17.5): ${JSON.stringify(bad)}`);
+}
+
+/** The card is fully on screen (or, if taller than the screen, fills it). */
+async function expectCardInViewport(t, name) {
+  await t.poll((lib, n) => {
+    const sec = lib.scope({ name: n });
+    if (!sec) return { pending: true, why: 'card not visible' };
+    const r = sec.getBoundingClientRect();
+    const ok = r.height <= innerHeight ? r.top >= -1 && r.bottom <= innerHeight + 1 : r.top <= 1 && r.bottom >= innerHeight - 1;
+    return ok ? { ok: true } : { pending: true, why: `card spans ${Math.round(r.top)}–${Math.round(r.bottom)}px of a ${innerHeight}px screen` };
+  }, [name], { timeout: 4000, what: `the new "${name}" card to be scrolled into view` });
+}
+
+/** Cards on Today (sections with an aria-label), counted in the DOM even while a sheet makes them inert. */
+const cardCount = (t) => t.evaluate(() => document.querySelectorAll('section[aria-label]').length);
+
+// ---------------------------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------------------------
 
@@ -1570,6 +1688,426 @@ export const scenarios = [
       } finally {
         t.server.clearOverrides();
       }
+    },
+  },
+
+  // ------------------------------------------------------------------ Batch 1 (§17, 20/11/2026)
+
+  {
+    id: 'lateral-raise-tracks',
+    title: 'Two lateral raises are two tracks (§17.1): #1 8 kg × 15,15,14 → "Go lighter → 5.5 kg", #2 6 kg × 20,20,20 → "Add 2.5 kg today → 8.5 kg"',
+    timeout: 120000,
+    async run(t) {
+      const push = {
+        date: '2026-11-05', day: 'pushA', entries: [
+          mainEntry('bench', 50, [5, 5, 5, 5, 5]),
+          { exerciseId: 'ohp', sets: sets(30, 10, 10, 10) },
+          { exerciseId: 'inclineDbPress', sets: sets(20, 10, 10, 10) },
+          { exerciseId: 'tricepsPushdown', sets: sets(25, 12, 12, 12) },
+          { exerciseId: 'lateralRaise', sets: sets(8, 15, 15, 14) },
+          { exerciseId: 'ohTricepsExt', sets: sets(15, 12, 12, 12) },
+          { exerciseId: 'lateralRaise', sets: sets(6, 20, 20, 20) },
+        ],
+      };
+      await bootSeeded(t, seedState([
+        push,
+        { date: '2026-11-06', day: 'legs', entries: [mainEntry('squat', 60, [5, 5, 5])] },
+        { date: '2026-11-07', day: 'pullB', entries: [mainEntry('barbellRow', 40, [5, 5, 5, 5, 5])] },
+      ]));
+      await expectToday(t, 5, 'Push B');
+
+      t.step('Two Lateral raise cards, each with its own suggestion');
+      const LR1 = nthCard('Lateral raise', 0);
+      const LR2 = nthCard('Lateral raise', 1);
+      expectEqual(await t.count('region', /^Lateral raise/), 2, 'Lateral raise cards on Push B');
+      await waitHeadlineWithin(t, LR1, 'Go lighter → 5.5 kg', 'Lateral raise #1 (with Triceps pushdown): a set fell under 15');
+      await waitHeadlineWithin(t, LR2, `Add 2.5 kg today → 8.5 kg`, 'Lateral raise #2 (with Overhead triceps extension)');
+
+      t.step('Different pre-filled weights');
+      await openCardWithin(t, LR1, 'Lateral raise #1');
+      await expectSetWeightsWithin(t, LR1, 'Lateral raise #1', 5.5, 3);
+      await openCardWithin(t, LR2, 'Lateral raise #2');
+      await expectSetWeightsWithin(t, LR2, 'Lateral raise #2', 8.5, 3);
+      expect((await t.text({ within: LR1 })).includes('Triceps pushdown'), 'Lateral raise #1 is the one supersetted with Triceps pushdown');
+      expect((await t.text({ within: LR2 })).includes('Overhead triceps extension'), 'Lateral raise #2 is the one supersetted with Overhead triceps extension');
+
+      t.step('Log both; saved in card order, so each keeps its own track');
+      for (const [w, list] of [[LR1, [15, 15, 15]], [LR2, [20, 20, 20]]]) {
+        for (let i = 0; i < list.length; i++) await t.type(`Set ${i + 1} reps`, list[i], { within: w });
+      }
+      await saveWorkout(t, 'Push B', D0);
+      const saved = (await t.getJSON(STORAGE_KEY)).sessions.find((s) => s.date === D0 && s.day === 'pushB');
+      expectEqual(saved?.entries?.filter((e) => e.exerciseId === 'lateralRaise').map((e) => e.sets), [sets(5.5, 15, 15, 15), sets(8.5, 20, 20, 20)],
+        'Saved lateral raises, in card order (#1 then #2)');
+      await moveTo(t, addDays(D0, 1));
+      await pickDay(t, `Day 2 ${DOT} Push A`);
+      await expectToday(t, 2, 'Push A');
+      await waitHeadlineWithin(t, nthCard('Lateral raise', 0), 'Keep 5.5 kg', 'Lateral raise #1 on the next push day');
+      await waitHeadlineWithin(t, nthCard('Lateral raise', 1), `Add 2.5 kg today → 11 kg`, 'Lateral raise #2 on the next push day');
+
+      t.step('Progress lists the second track under its plan name');
+      await goTab(t, 'Progress');
+      await t.click('One at a time');
+      await t.waitForRole('button', { startsWith: `Lateral raise ${DOT} with Overhead triceps extension` });
+    },
+  },
+
+  {
+    id: 'weight-step',
+    title: 'Weight step (§17.2): Lat pulldown (machine) adds 5 kg; a 1 kg step set in the Set weight sheet drives Hammer curl\'s next suggestions',
+    timeout: 120000,
+    async run(t) {
+      await bootSeeded(t, seedState([
+        { date: '2026-11-05', day: 'pullA', entries: [
+          mainEntry('deadlift', 100, [5]),
+          { exerciseId: 'latPulldown', sets: sets(45, 12, 12, 12) },
+          { exerciseId: 'hammerCurl', sets: sets(12, 12, 12, 12, 12) },
+        ] },
+        { date: '2026-11-06', day: 'pushA', entries: [mainEntry('bench', 50, [5, 5, 5, 5, 5])] },
+        { date: '2026-11-07', day: 'legs', entries: [mainEntry('squat', 60, [5, 5, 5])] },
+      ]));
+      await expectToday(t, 4, 'Pull B');
+
+      t.step('Machine: the default step is 5 kg');
+      await waitHeadline(t, 'Lat pulldown', `Add 5 kg today → 50 kg`);
+      await openCard(t, 'Lat pulldown');
+      await expectSetWeights(t, 'Lat pulldown', 50, 3);
+
+      t.step('Free weight: 2.5 kg until the user sets a step');
+      await waitHeadline(t, 'Hammer curl', `Add 2.5 kg today → 14.5 kg`);
+      const SHEET = { role: 'dialog', name: 'Set weight: Hammer curl' };
+      await clickInside(t, card('Hammer curl'), 'Set weight');
+      await t.waitForRole('dialog', SHEET.name);
+      await t.type(/step/i, 1, { within: SHEET });
+      await t.click('Save', { within: SHEET });
+      await t.waitGone('dialog', SHEET.name);
+      await waitStored(t, 'steps.hammerCurl = 1', (st) => st.steps?.hammerCurl === 1);
+
+      t.step('The suggestion uses the 1 kg step');
+      await waitHeadline(t, 'Hammer curl', `Add 1 kg today → 13 kg`);
+      await openCard(t, 'Hammer curl');
+      await expectSetWeights(t, 'Hammer curl', 13, 4);
+      await waitHeadline(t, 'Lat pulldown', `Add 5 kg today → 50 kg`); // other exercises keep their own step
+
+      t.step('Log it; the next pull day adds 1 kg again');
+      await fillSets(t, 'Hammer curl', reps(12, 12, 12, 12));
+      await saveWorkout(t, 'Pull B', D0);
+      const saved = (await t.getJSON(STORAGE_KEY)).sessions.find((s) => s.date === D0 && s.day === 'pullB');
+      expectEqual(saved?.entries?.find((e) => e.exerciseId === 'hammerCurl')?.sets, sets(13, 12, 12, 12, 12), 'Saved Hammer curl sets');
+      await moveTo(t, addDays(D0, 1));
+      await pickDay(t, `Day 1 ${DOT} Pull A`);
+      await expectToday(t, 1, 'Pull A');
+      await waitHeadline(t, 'Hammer curl', `Add 1 kg today → 14 kg`);
+    },
+  },
+
+  {
+    id: 'plank-timed',
+    title: 'Plank is timed (§17.3): target = shortest hold + 5 s, shown in seconds; 60 s on every set → a plate on the back, back to 30 s',
+    timeout: 120000,
+    async run(t) {
+      await bootSeeded(t, seedStateWith([
+        { date: '2026-11-07', day: 'pullA', entries: [
+          mainEntry('deadlift', 100, [5]),
+          { exerciseId: 'plank', sets: sets(0, 50, 45, 42) },
+          { exerciseId: 'hangingLegRaise', sets: sets(0, 10, 10, 10) },
+        ] },
+        { date: '2026-11-08', day: 'pushA', entries: [mainEntry('bench', 50, [5, 5, 5, 5, 5])] },
+      ], { settings: { abs: true }, choices: { 'abs.1': 'plank' } }));
+      await expectToday(t, 3, 'Legs');
+
+      t.step('Plank: keep the weight, hold 47 s (shortest last time 42 s + 5)');
+      await waitCard(t, 'Plank');
+      const head = await waitHeadlineWithin(t, { name: 'Plank' }, /\S/, 'Plank');
+      expect(head !== 'Any reps', 'Plank uses the timed suggestion, not "Any reps"');
+      await openCardWithin(t, { name: 'Plank' }, 'Plank');
+      await t.waitForText(/\b47 s\b/, { within: card('Plank') });
+      await expectSetWeights(t, 'Plank', 0, 3);
+      await waitHeadline(t, 'Hanging leg raise', 'Any reps'); // the other abs exercises keep "Any reps"
+
+      t.step('Hold 60 s on every set');
+      await fillSets(t, 'Plank', reps(60, 60, 60));
+      await saveWorkout(t, 'Legs', D0);
+      const saved = (await t.getJSON(STORAGE_KEY)).sessions.find((s) => s.date === D0 && s.day === 'legs');
+      expectEqual(saved?.entries?.find((e) => e.exerciseId === 'plank')?.sets, sets(0, 60, 60, 60), 'Saved plank holds (seconds in the reps field)');
+
+      t.step('Next abs day: a plate on the back (2.5 kg), target back to 30 s');
+      await moveTo(t, addDays(D0, 1));
+      await pickDay(t, `Day 1 ${DOT} Pull A`);
+      await expectToday(t, 1, 'Pull A');
+      await waitCard(t, 'Plank');
+      const head2 = await waitHeadlineWithin(t, { name: 'Plank' }, /\S/, 'Plank');
+      expect(head2 !== 'Any reps', 'Plank uses the timed suggestion, not "Any reps"');
+      await openCardWithin(t, { name: 'Plank' }, 'Plank');
+      await t.waitForText(/\b30 s\b/, { within: card('Plank') });
+      await expectSetWeights(t, 'Plank', 2.5, 3);
+    },
+  },
+
+  {
+    id: 'barbell-plates',
+    title: 'Total weight and plates (§17.4): 62.5 kg = 20 kg bar + 21.25 kg each side; Barbell weight 15 changes the plates and the warm-up',
+    timeout: 120000,
+    async run(t) {
+      await bootSeeded(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      await waitHeadline(t, 'Squat', `Add 2.5 kg today → 62.5 kg`);
+
+      t.step('Squat (barbell): "Total weight" and the plate line');
+      await openCard(t, 'Squat');
+      await t.waitForText('Total weight', { within: card('Squat') });
+      await t.waitForText('= 20 kg bar + 21.25 kg each side', { within: card('Squat') });
+      await t.waitForText(/Warm-up: 20×10\b/, { within: card('Squat') });
+
+      t.step('Leg press (machine): "Weight (stack)"');
+      await openCard(t, 'Leg press');
+      await t.waitForText('Weight (stack)', { within: card('Leg press') });
+
+      t.step('Plan rules card');
+      await goTab(t, 'Plan');
+      const RULE = 'Weights are the total on the bar, bar included.';
+      await t.poll((lib, want) => (lib.norm(document.body.textContent).includes(want) ? { ok: true } : { pending: true, why: 'not in the Plan screen' }),
+        [RULE], { what: `the Plan rules card to say "${RULE}"` });
+
+      t.step('Data → Settings: Barbell weight 15');
+      await goTab(t, 'Data');
+      await t.type(/^Barbell weight/, 15);
+      await t.press('Enter');
+      await waitStored(t, 'settings.barWeight = 15', (st) => st.settings?.barWeight === 15);
+
+      t.step('Today: plates and warm-up use the 15 kg bar');
+      await goTab(t, 'Today');
+      await expectToday(t, 6, 'Legs');
+      await openCard(t, 'Squat');
+      await expectSetWeights(t, 'Squat', 62.5, 3);
+      await t.waitForText('= 15 kg bar + 23.75 kg each side', { within: card('Squat') });
+      await t.waitForText(/Warm-up: 15×10\b/, { within: card('Squat') });
+    },
+  },
+
+  {
+    id: 'add-exercise-touch',
+    title: 'Add exercise on iPhone (§17.5, real touch): no autofocus, first tap adds "Leg press" (open, on screen, toast); Enter adds typed / single match; empty Enter does nothing',
+    timeout: 120000,
+    async run(t) {
+      const ADD = { role: 'dialog', name: 'Add exercise' };
+      const openAdd = async () => {
+        await t.tap('+ Add exercise', { within: 'document' });
+        await t.waitForRole('dialog', ADD.name);
+      };
+      await t.enableTouch();
+      await boot(t);
+      await expectToday(t, 1, 'Pull A');
+
+      t.step('The sheet opens with no text box focused (no keyboard over the list)');
+      await openAdd();
+      await sleep(400);
+      const focused = await focusedTextEntry(t);
+      expect(!focused, `The Add exercise sheet must not focus a text box when it opens (the iPhone keyboard covers the list); focused: ${focused}`);
+      await expectOptionHeights(t, ADD.name, ['Leg press', 'Deadlift', 'Lateral raise', 'Plank']);
+
+      t.step('One tap on "Leg press" adds it');
+      await t.clearStatusLog();
+      await t.tap(/^Leg press(?! calf)/, { within: ADD });
+      await t.waitGone('dialog', ADD.name);
+      await t.waitForStatus('Added Leg press');
+      await t.waitForRole('region', 'Leg press');
+      expectEqual(await t.count('region', 'Leg press'), 1, 'Leg press cards after one tap');
+      await t.poll((lib) => (lib.findOne({ field: true, name: 'Set 1 reps', within: { name: 'Leg press' } }) ? { ok: true } : { pending: true, why: 'the card is closed' }),
+        [], { timeout: 3000, what: 'the new Leg press card to be open (its "Set 1 reps" box showing)' });
+      await expectCardInViewport(t, 'Leg press');
+
+      t.step('Typing a name + Enter adds it as a custom exercise');
+      await openAdd();
+      await t.typeInTextField('Cable Y-raise', { within: ADD });
+      await t.clearStatusLog();
+      await t.press('Enter');
+      await t.waitGone('dialog', ADD.name);
+      await t.waitForStatus('Added Cable Y-raise');
+      await t.waitForRole('region', 'Cable Y-raise');
+
+      t.step('Enter with a single remaining match adds that exercise');
+      await openAdd();
+      await t.typeInTextField('skull', { within: ADD });
+      await t.clearStatusLog();
+      await t.press('Enter');
+      await t.waitGone('dialog', ADD.name);
+      await t.waitForStatus('Added Skullcrusher');
+      await t.waitForRole('region', 'Skullcrusher');
+
+      t.step('Empty Enter does nothing');
+      await openAdd();
+      const before = await cardCount(t);
+      await t.typeInTextField('', { within: ADD });
+      await t.clearStatusLog();
+      await t.press('Enter');
+      await sleep(500);
+      expect(await t.exists('dialog', ADD.name), 'Empty Enter must leave the Add exercise sheet open');
+      expectEqual(await cardCount(t), before, 'Cards after an empty Enter');
+      const log = await t.statusLog();
+      expect(!log.some((m) => /^Added\b/.test(m)), `Empty Enter must not add anything; status messages: ${JSON.stringify(log)}`);
+
+      t.step('First tap works while the search box has focus');
+      await t.typeInTextField('curl', { within: ADD });
+      await t.clearStatusLog();
+      await t.tap({ startsWith: 'Leg curl' }, { within: ADD });
+      await t.waitGone('dialog', ADD.name);
+      await t.waitForStatus('Added Leg curl');
+      await t.waitForRole('region', 'Leg curl');
+      await expectCardInViewport(t, 'Leg curl');
+    },
+  },
+
+  {
+    id: 'swap-touch',
+    title: 'Swap on iPhone (§17.5, real touch): Hanging leg raise → Plank renames the card, toasts, persists; Custom… + Enter saves',
+    async run(t) {
+      const SA = { role: 'dialog', name: 'Swap: Abs' };
+      await t.enableTouch();
+      await bootSeeded(t, seedStateWith([], { settings: { abs: true } }));
+      await expectToday(t, 1, 'Pull A');
+
+      t.step('Swap Hanging leg raise → Plank with one tap');
+      await waitCard(t, 'Hanging leg raise');
+      await tapInside(t, card('Hanging leg raise'), 'Swap');
+      await t.waitForRole('dialog', SA.name);
+      await expectOptionHeights(t, SA.name, ['Hanging leg raise', 'Plank', 'Ab wheel rollout', 'Custom…']);
+      await t.clearStatusLog();
+      await t.tap({ startsWith: 'Plank' }, { within: SA });
+      await t.waitGone('dialog', SA.name);
+      await t.waitForRole('region', 'Plank');
+      expect(!(await t.exists('region', 'Hanging leg raise')), 'The Hanging leg raise card should now be Plank');
+      await t.waitForStatus('Swapped to Plank');
+      await waitStored(t, 'choices["abs.2"] = "plank"', (st) => st.choices?.['abs.2'] === 'plank');
+
+      t.step('The swap persists after a reload');
+      await t.reload();
+      await waitNav(t);
+      await expectToday(t, 1, 'Pull A');
+      await t.waitForRole('region', 'Plank');
+      expect(!(await t.exists('region', 'Hanging leg raise')), 'After reload Hanging leg raise is back — the swap was not saved');
+
+      t.step('Custom… + Enter on the other abs slot');
+      await tapInside(t, card('Ab wheel rollout'), 'Swap');
+      await t.waitForRole('dialog', SA.name);
+      await t.tap({ startsWith: 'Custom' }, { within: SA });
+      await t.typeInTextField('Dragon flag', { within: SA });
+      await t.press('Enter');
+      await t.waitGone('dialog', SA.name);
+      await t.waitForRole('region', 'Dragon flag');
+      expect(!(await t.exists('region', 'Ab wheel rollout')), 'The Ab wheel rollout card should now be Dragon flag');
+      await waitStored(t, 'choices["abs.1"] = "custom:Dragon flag"', (st) => st.choices?.['abs.1'] === 'custom:Dragon flag');
+    },
+  },
+
+  // ------------------------------------------------------------------ added by the independent review of Batch 1
+
+  {
+    id: 'review-plate-line-scope',
+    title: 'Plate line only on a standard bar loaded on both ends: Deadlift / Bench press yes; EZ-bar curl, Skullcrusher and Landmine press keep "Total weight" but get no plate line',
+    timeout: 120000,
+    async run(t) {
+      const NO_LINE = /each side|Empty bar|Lighter than the bar/;
+      await bootSeeded(t, seedStateWith([
+        { date: '2026-11-01', day: 'pullA', entries: [mainEntry('deadlift', 100, [5]), { exerciseId: 'ezCurl', sets: sets(25, 12, 12, 12, 12) }] },
+        { date: '2026-11-02', day: 'pushA', entries: [
+          mainEntry('bench', 50, [5, 5, 5, 5, 5]),
+          { exerciseId: 'landminePress', sets: sets(30, 10, 10, 10) },
+          { exerciseId: 'skullcrusher', sets: sets(15, 12, 12, 12) },
+        ] },
+        { date: '2026-11-03', day: 'legs', entries: [mainEntry('squat', 60, [5, 5, 5])] },
+        { date: '2026-11-04', day: 'pullB', entries: [mainEntry('barbellRow', 40, [5, 5, 5, 5, 5])] },
+        { date: '2026-11-05', day: 'pushB', entries: [mainEntry('ohp', 30, [5, 5, 5, 5, 5])] },
+        { date: '2026-11-06', day: 'legs', entries: [mainEntry('squat', 62.5, [5, 5, 5])] },
+      ], { choices: { 'pull.curl1': 'ezCurl', 'push.incline': 'landminePress', 'push.tri1': 'skullcrusher' } }));
+      await expectToday(t, 1, 'Pull A');
+
+      t.step('Deadlift: a standard bar → the plate line');
+      await openCard(t, 'Deadlift');
+      await t.waitForText('= 20 kg bar + 42.5 kg each side', { within: card('Deadlift') });
+
+      t.step('EZ-bar curl: "Total weight", no plate line (an EZ bar is not a 20 kg bar)');
+      await openCard(t, 'EZ-bar curl');
+      await t.waitForText('Total weight', { within: card('EZ-bar curl') });
+      const ez = await t.text({ within: card('EZ-bar curl') });
+      expect(!NO_LINE.test(ez), `EZ-bar curl must not show a 20 kg-bar plate line; card text: ${JSON.stringify(ez)}`);
+      await t.type('Set 1 weight', 15, { within: card('EZ-bar curl') });
+      const ez15 = await t.text({ within: card('EZ-bar curl') });
+      expect(!NO_LINE.test(ez15), `EZ-bar curl at 15 kg must not say it is lighter than the bar; card text: ${JSON.stringify(ez15)}`);
+
+      t.step('Push A: Bench press has the line; Landmine press and Skullcrusher do not');
+      await pickDay(t, `Day 2 ${DOT} Push A`);
+      await expectToday(t, 2, 'Push A');
+      await openCard(t, 'Bench press');
+      await t.waitForText(/= 20 kg bar \+ [\d.]+ kg each side/, { within: card('Bench press') });
+      for (const name of ['Landmine press', 'Skullcrusher']) {
+        await openCard(t, name);
+        await t.waitForText('Total weight', { within: card(name) });
+        const text = await t.text({ within: card(name) });
+        expect(!NO_LINE.test(text), `${name} must not show a plate line; card text: ${JSON.stringify(text)}`);
+      }
+    },
+  },
+
+  {
+    id: 'review-plank-seconds',
+    title: 'Plank holds read as seconds everywhere: after an off day the card names the session it went by; History and the import preview show "… s"',
+    timeout: 120000,
+    async run(t) {
+      await bootSeeded(t, seedStateWith([
+        { date: '2026-10-31', day: 'pullA', entries: [mainEntry('deadlift', 100, [5]), { exerciseId: 'abWheel', sets: sets(0, 10, 10, 10) }, { exerciseId: 'plank', sets: sets(0, 40, 40, 40) }] },
+        { date: '2026-11-01', day: 'pushA', entries: [mainEntry('bench', 50, [5, 5, 5, 5, 5])] },
+        { date: '2026-11-02', day: 'legs', offDay: true, entries: [mainEntry('squat', 60, [5, 5, 3]), { exerciseId: 'plank', sets: sets(0, 20, 20, 15) }] },
+        { date: '2026-11-03', day: 'pullB', entries: [mainEntry('barbellRow', 40, [5, 5, 5, 5, 5])] },
+        { date: '2026-11-04', day: 'pushB', entries: [mainEntry('ohp', 30, [5, 5, 5, 5, 5])] },
+      ], { settings: { abs: true }, choices: { 'abs.2': 'plank' } }));
+      await expectToday(t, 6, 'Legs');
+
+      t.step('Plank: the off day is passed over, and the card says so instead of calling 31/10 "last time"');
+      await waitHeadline(t, 'Plank', 'Hold 45 s');
+      await openCard(t, 'Plank');
+      const text = await t.text({ within: card('Plank') });
+      expect(text.includes('Last time was an off day') && text.includes('31/10: 40, 40, 40 s'),
+        `Plank detail should say the last time was an off day and name 31/10 (40, 40, 40 s); card text: ${JSON.stringify(text)}`);
+      expect(!text.includes('Last time: 40, 40, 40 s'), `Plank detail must not call 31/10 "last time" (02/11 was 20, 20, 15 s); card text: ${JSON.stringify(text)}`);
+
+      t.step('History: plank holds in seconds, collapsed and open');
+      await goTab(t, 'History');
+      const label = historyLabel('2026-11-02', 3, 'Legs');
+      await t.waitForRole('article', label);
+      const closed = await t.text({ within: { role: 'article', name: label } });
+      expect(closed.includes('Plank 0×20,20,15 s'), `Collapsed History line should show the holds in seconds; text: ${JSON.stringify(closed)}`);
+      await t.click({ startsWith: `${weekday('2026-11-02')} ${dmy('2026-11-02')}` }, { within: { role: 'article', name: label } });
+      await t.waitForText('0 kg × 20, 20, 15 s', { within: { role: 'article', name: label } });
+
+      t.step('Data → import preview shows holds in seconds');
+      await goTab(t, 'Data');
+      await t.type('Paste workouts', ['05/11/2026 Legs', 'Squat 62.5x5 x3', 'Plank 0x45 0x45 0x40'].join('\n'));
+      await t.click('Preview');
+      await t.waitForRole('button', { startsWith: 'Import ' });
+      await t.waitForText('Plank 0×45,45,40 s');
+    },
+  },
+
+  {
+    id: 'review-add-plural',
+    title: 'Add exercise search with a plural ("hammer curls", real touch): the list shows Hammer curl (no "No match" note) and one tap adds it',
+    async run(t) {
+      const ADD = { role: 'dialog', name: 'Add exercise' };
+      await t.enableTouch();
+      await boot(t);
+      await expectToday(t, 1, 'Pull A');
+      await t.tap('+ Add exercise', { within: 'document' });
+      await t.waitForRole('dialog', ADD.name);
+      await t.typeInTextField('hammer curls', { within: ADD });
+      await t.waitForRole('button', 'Hammer curl', { within: ADD });
+      const shown = await t.text({ within: ADD });
+      expect(!/No match/.test(shown), `The list should not say "No match" for "hammer curls"; sheet text: ${JSON.stringify(shown)}`);
+      await t.clearStatusLog();
+      await t.tap('Hammer curl', { within: ADD });
+      await t.waitGone('dialog', ADD.name);
+      await t.waitForStatus('Added Hammer curl');
+      expectEqual(await t.count('region', 'Hammer curl'), 2, 'Hammer curl cards (the plan\'s curl slot + the added one)');
     },
   },
 ];

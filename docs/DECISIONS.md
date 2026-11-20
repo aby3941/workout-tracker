@@ -60,6 +60,28 @@ The independent review of the finished screens made these calls. They're the fin
 | The watch list shows misses and pending deloads only | That's what the logic produces. |
 | Accessory presses are labelled "(8–12 reps)" | Keeps them apart from the same lift done heavy for 5s, which has its own history. |
 
+## Batch 1 — owner feedback (20/11/2026)
+
+Details in [`SPEC.md` §17](SPEC.md).
+
+| Decision | Why |
+|---|---|
+| **An exercise done twice in a workout is two tracks** (exercise, role, occurrence): each Lateral raise on a Push day has its own history, suggestion, set weight and chart. The occurrence comes from the saved order, so old data needs no migration; the second track is named after its superset partner ("Lateral raise · with Overhead triceps extension") | The two lateral raises were merged, so both cards showed the heavier one's weight and the same advice. |
+| **Each exercise has a weight step:** machines and cables go up and down 5 kg / 10 lb, everything else as before. The owner can set a step for any exercise (main lifts too) in its Set weight sheet; it stays until changed and deloads round down to it | Machine stacks don't move in 2.5 kg jumps, and some gyms have no small plates. |
+| **Plank is timed:** the reps box holds seconds. Aim for the shortest hold + 5 s; 60 s on every set adds a plate on the back (the plank's step) and the target goes back to 30 s. Off days don't count. The other ab exercises stay "Any reps" | The owner wants holds to build up the same way reps do. |
+| **Weights are the total, bar included.** Barbell cards say "Total weight" with a plate line ("= 20 kg bar + 21.25 kg each side"); machines say "Weight (stack)", dumbbells "Weight (each)", bodyweight "Added weight". The bar is a setting (Data → Settings, default 20 kg / 45 lb) used by the plate line and the warm-up | The owner asked whether weights meant the plates or the total. Labelling every card answers it once. |
+| **Add exercise and Swap work with one tap on iPhone:** the Add sheet no longer opens the keyboard; typing filters the list and Enter / Go adds the single match or the typed name; the new card opens, scrolls into view and flashes, with a toast. Swap toasts "Swapped to …". Option rows are 48 px and keep the keyboard steady under the finger | On the phone the keyboard covered the list, the first tap only closed it, and nothing showed where the new card went. |
+
+### Batch 1 — changes after the independent review (20/11/2026)
+
+| Decision | Why |
+|---|---|
+| **The plate line shows only for a standard bar loaded on both ends.** EZ-bar curl and skullcrusher (an EZ bar) and landmine press (one end loaded) still say "Total weight" but show no plates | A 20 kg-bar line gave wrong loading: EZ-bar curl 27.5 kg read "20 kg bar + 3.75 kg each side", and a 17.5 kg skullcrusher read "Lighter than the bar". |
+| **Plank after an off day:** when the last plank was on an off day, the card says "Last time was an off day — going by DD/MM: 40, 40, 40 s" | The target comes from the last normal day. Calling that day "last time" didn't match what the owner had just done. |
+| **Plank holds read as seconds everywhere:** History and the import preview show "0 kg × 45, 45, 40 s", as Progress does | §17.3: the reps box holds seconds. |
+| **The Add exercise search finds plurals** ("hammer curls" → Hammer curl), the same way typed names are matched | The list said "No match" for a name that Enter then added. |
+| **Known limits, kept on purpose:** (1) a track follows the order you log: if only the second Lateral raise of a Push day is logged, it counts as the first (its history, and it uses up the first one's set weight); (2) switching kg ↔ lb converts the bar like any other weight (20 kg → 44 lb); type 45 in Data → Settings if your lb bar is 45 lb | (1) Backups store no slot, and the order rule keeps old data and backups working unchanged. Skipping the first superset and doing the second is rare. (2) Changing the units doesn't change the bar you own. |
+
 ## Process
 
 The rules were written first and agreed before any code. Each change went through three separate steps:

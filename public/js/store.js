@@ -1,28 +1,31 @@
 // App state persistence. The storage object (localStorage in the app) is always passed in.
 
 import { sortByDate } from './dates.js';
-import { convertWeight } from './units.js';
+import { convertWeight, barWeight, isValidBarWeight, isValidStep } from './units.js';
 import { roleOf } from './program.js';
-import { baselineKey, isBaselineWeight } from './progression.js';
+import { baselineKey, isBaselineWeight, occurrencesOf } from './progression.js';
 
 /** localStorage key for the whole app state. */
 export const STORAGE_KEY = 'ppl-tracker-v1';
 
 /**
- * A fresh default state. `baselines` holds set weights keyed by `baselineKey(exerciseId, role)`.
+ * A fresh default state. `baselines` holds set weights keyed by `baselineKey(exerciseId, role, occurrence)`;
+ * `steps` the user's own weight step per exercise id (§17.2); `settings.barWeight` the empty bar in the
+ * user's unit (§17.4).
  * @returns {{version: 1,
- *   settings: {unit: 'kg'|'lb', goal: string, abs: boolean, lastBackupAt: string|null, setupDone: boolean},
+ *   settings: {unit: 'kg'|'lb', goal: string, abs: boolean, lastBackupAt: string|null, setupDone: boolean, barWeight: number},
  *   choices: Object<string,string>, sessions: Array<object>, draft: object|null,
- *   baselines: Object<string, {weight: number, setOn: string}>}}
+ *   baselines: Object<string, {weight: number, setOn: string}>, steps: Object<string, number>}}
  */
 export function defaultState() {
   return {
     version: 1,
-    settings: { unit: 'kg', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false },
+    settings: { unit: 'kg', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false, barWeight: barWeight('kg') },
     choices: {},
     sessions: [],
     draft: null,
     baselines: {},
+    steps: {},
   };
 }
 
@@ -49,8 +52,14 @@ const validBaselines = (raw) => (isObject(raw)
     .map(([key, b]) => [key, { ...b }]))
   : {});
 
+/** Stored steps that are usable (finite > 0), copied; anything else → {}. */
+const validSteps = (raw) => (isObject(raw)
+  ? Object.fromEntries(Object.entries(raw).filter(([, v]) => isValidStep(v)))
+  : {});
+
 /**
- * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable baselines).
+ * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable baselines and steps;
+ * a missing or unusable bar weight becomes the empty bar of the stored unit, 20 kg / 45 lb).
  * @param {unknown} raw
  * @returns {ReturnType<typeof defaultState>}
  */
@@ -60,13 +69,17 @@ export function migrate(raw) {
   const sessions = Array.isArray(raw.sessions)
     ? raw.sessions.filter(isObject).map((s) => (s.id ? s : { ...s, id: newId() }))
     : [];
+  const stored = isObject(raw.settings) ? raw.settings : {};
+  const settings = { ...d.settings, ...stored };
+  settings.barWeight = isValidBarWeight(stored.barWeight) ? stored.barWeight : barWeight(settings.unit);
   return {
     version: 1,
-    settings: { ...d.settings, ...(isObject(raw.settings) ? raw.settings : {}) },
+    settings,
     choices: isObject(raw.choices) ? { ...raw.choices } : {},
     sessions,
     draft: isObject(raw.draft) ? raw.draft : null,
     baselines: validBaselines(raw.baselines),
+    steps: validSteps(raw.steps),
   };
 }
 
@@ -182,17 +195,18 @@ export function deleteSession(sessions, id) {
 
 /**
  * Set the weight for an exercise's next session (replacing any earlier one) under
- * `baselineKey(exerciseId, role)`. Invalid weight (not a finite number ≥ 0) → an equal copy of `state`.
+ * `baselineKey(exerciseId, role, occurrence)`. Invalid weight (not a finite number ≥ 0) → an equal copy of `state`.
  * @param {object} state
  * @param {string} exerciseId
  * @param {'main'|'accessory'} role
  * @param {number} weight
  * @param {string} today ISO date, stored as `setOn`
+ * @param {number} [occurrence] which track (0 = the first entry of the exercise in a workout)
  * @returns {object} new state
  */
-export function setBaseline(state, exerciseId, role, weight, today) {
+export function setBaseline(state, exerciseId, role, weight, today, occurrence = 0) {
   if (!isBaselineWeight(weight)) return { ...state };
-  const baselines = { ...(isObject(state.baselines) ? state.baselines : {}), [baselineKey(exerciseId, role)]: { weight, setOn: today } };
+  const baselines = { ...(isObject(state.baselines) ? state.baselines : {}), [baselineKey(exerciseId, role, occurrence)]: { weight, setOn: today } };
   return { ...state, baselines };
 }
 
@@ -209,22 +223,53 @@ const withoutBaselines = (state, keys) => {
  * @param {object} state
  * @param {string} exerciseId
  * @param {'main'|'accessory'} role
+ * @param {number} [occurrence]
  * @returns {object} new state
  */
-export function clearBaseline(state, exerciseId, role) {
-  return withoutBaselines(state, [baselineKey(exerciseId, role)]);
+export function clearBaseline(state, exerciseId, role, occurrence = 0) {
+  return withoutBaselines(state, [baselineKey(exerciseId, role, occurrence)]);
 }
 
 /**
  * Use up the set weights of a just-saved workout: every entry with at least one set of `reps > 0`
- * removes its baseline (role from `roleOf(session.day, exerciseId)`). Other baselines stay.
+ * removes the baseline of its track (role from `roleOf(session.day, exerciseId)`, occurrence from the entry's
+ * place among the session's entries of that exercise). Other baselines stay.
  * @param {object} state
  * @param {{day: string, entries: Array<{exerciseId: string, sets: Array<{reps: number}>}>}} session
  * @returns {object} new state
  */
 export function consumeBaselines(state, session) {
-  const done = (session.entries || []).filter((e) => (e.sets || []).some((st) => st.reps > 0));
-  return withoutBaselines(state, done.map((e) => baselineKey(e.exerciseId, roleOf(session.day, e.exerciseId))));
+  const entries = session.entries || [];
+  const occ = occurrencesOf(entries);
+  const keys = entries.flatMap((e, i) => ((e.sets || []).some((st) => st.reps > 0)
+    ? [baselineKey(e.exerciseId, roleOf(session.day, e.exerciseId), occ[i])] : []));
+  return withoutBaselines(state, keys);
+}
+
+/**
+ * Set the user's own weight step for an exercise (both roles; §17.2). Invalid step (not a finite number > 0)
+ * → an equal copy of `state`.
+ * @param {object} state
+ * @param {string} exerciseId
+ * @param {number} step in the user's unit
+ * @returns {object} new state
+ */
+export function setStep(state, exerciseId, step) {
+  if (!isValidStep(step)) return { ...state };
+  return { ...state, steps: { ...(isObject(state.steps) ? state.steps : {}), [exerciseId]: step } };
+}
+
+/**
+ * Remove the user's step for an exercise, so the default applies again (an equal copy when none is set).
+ * @param {object} state
+ * @param {string} exerciseId
+ * @returns {object} new state
+ */
+export function clearStep(state, exerciseId) {
+  if (!isObject(state.steps) || !Object.hasOwn(state.steps, exerciseId)) return { ...state };
+  const steps = { ...state.steps };
+  delete steps[exerciseId];
+  return { ...state, steps };
 }
 
 const convertSets = (sets, from, to) => (sets || []).map((st) => (
@@ -235,9 +280,14 @@ const convertBaselines = (baselines, from, to) => Object.fromEntries(
   Object.entries(baselines).map(([key, b]) => [key, { ...b, weight: convertWeight(b.weight, from, to) }]),
 );
 
+const convertSteps = (steps, from, to) => Object.fromEntries(
+  Object.entries(steps).map(([id, step]) => [id, convertWeight(step, from, to)]),
+);
+
 /**
- * Convert every saved weight (sessions, the in-progress draft and set weights) to `toUnit` and switch
- * the unit setting. A state without `baselines` gets none added.
+ * Convert every saved weight (sessions, the in-progress draft, set weights, the user's steps and the bar weight)
+ * to `toUnit` and switch the unit setting. A state without `baselines`, `steps` or `settings.barWeight` gets
+ * none added.
  * @param {object} state
  * @param {'kg'|'lb'} toUnit
  * @returns {object} new state
@@ -252,7 +302,10 @@ export function convertAllWeights(state, toUnit) {
   const draft = state.draft && Array.isArray(state.draft.entries)
     ? { ...state.draft, entries: state.draft.entries.map((e) => ({ ...e, sets: convertSets(e.sets, from, toUnit) })) }
     : state.draft;
-  const out = { ...state, settings: { ...state.settings, unit: toUnit }, sessions, draft };
+  const settings = { ...state.settings, unit: toUnit };
+  if (typeof state.settings.barWeight === 'number') settings.barWeight = convertWeight(state.settings.barWeight, from, toUnit);
+  const out = { ...state, settings, sessions, draft };
   if (isObject(state.baselines)) out.baselines = convertBaselines(state.baselines, from, toUnit);
+  if (isObject(state.steps)) out.steps = convertSteps(state.steps, from, toUnit);
   return out;
 }

@@ -2,22 +2,23 @@
 
 import {
   ROTATION, EXERCISES, GOALS, REST, ABS_DAYS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS,
+  HOLD_GOAL_SECONDS, HOLD_START_SECONDS, HOLD_STEP_SECONDS,
   nextWorkout, mainPrescription, accessoryPrescription, roleOf,
 } from '../program.js';
 import { baselineKey } from '../progression.js';
-import { formatWeight, formatNumber, incrementFor, smallestIncrement } from '../units.js';
+import { formatWeight, formatNumber, incrementFor, smallestIncrement, MACHINE_STEP } from '../units.js';
 import { html, setHTML, icon, plural } from './dom.js';
 import { openSwapSheet, openSetWeightSheet, openStartingWeights } from './pickers.js';
-import { dayPlan, dayName, positionsOf, dayList, roleName } from './model.js';
+import { dayPlan, dayName, positionsOf, dayList, roleName, partnerOf, planTrackName } from './model.js';
 
 // Which day cards are open (positions 1–6); starts with the next workout.
 const ui = { open: null };
 
 function rowMarkup(state, dayId, row) {
   const unit = state.settings.unit;
-  const b = state.baselines[baselineKey(row.exerciseId, row.role)];
+  const b = state.baselines[baselineKey(row.exerciseId, row.role, row.occurrence)];
   const setw = html`<button type="button" class="icon-btn" data-act="setweight" data-ex="${row.exerciseId}" data-role="${row.role}"
-    data-name="${roleName(row.exerciseId, row.name, row.role, row.item)}" aria-label="Set weight">
+    data-occ="${row.occurrence}" data-name="${roleName(row.exerciseId, row.trackName, row.role, row.item)}" aria-label="Set weight">
     <span class="unit-pill${b ? ' set' : ''}" aria-hidden="true">${b ? formatNumber(b.weight) : unit}</span></button>`;
   const right = row.swappable
     ? html`<button type="button" class="icon-btn" data-act="swap" data-slot="${row.slotKey}" aria-label="Swap">${icon('swap')}</button>${setw}`
@@ -33,12 +34,13 @@ function rowMarkup(state, dayId, row) {
 
 function rowsFor(state, dayId) {
   const plan = dayPlan(state, dayId);
-  const main = { exerciseId: plan.main.exerciseId, name: EXERCISES[plan.main.exerciseId].name, role: 'main', rx: mainPrescription(plan.main.sets), swappable: false };
+  const mainName = EXERCISES[plan.main.exerciseId].name;
+  const main = { exerciseId: plan.main.exerciseId, name: mainName, trackName: mainName, role: 'main', occurrence: 0, rx: mainPrescription(plan.main.sets), swappable: false };
   const items = plan.items.map((it) => {
-    const partner = it.supersetWith ? plan.items.find((p) => p.exerciseId === it.supersetWith && p !== it) : null;
+    const partner = partnerOf(plan, it);
     return {
-      exerciseId: it.exerciseId, name: it.name, role: roleOf(dayId, it.exerciseId), rx: accessoryPrescription(it),
-      swappable: it.swappable, slotKey: it.slotKey, item: it, superset: it.supersetWith ? (partner ? partner.name : '') : '',
+      exerciseId: it.exerciseId, name: it.name, trackName: planTrackName(plan, it), role: roleOf(dayId, it.exerciseId), occurrence: it.occurrence,
+      rx: accessoryPrescription(it), swappable: it.swappable, slotKey: it.slotKey, item: it, superset: it.supersetWith ? (partner ? partner.name : '') : '',
     };
   });
   return [main, ...items];
@@ -94,7 +96,10 @@ export function renderPlan(root, ctx) {
       <ul>
         <li><b>Main lifts:</b> hit all your ${MAIN_REPS}s → next time add ${inc('upper')}${inc('lower') === inc('upper') ? '' : ` (squat ${inc('lower')})`} — deadlift ${inc('deadlift')}.</li>
         <li><b>AMRAP (${MAIN_REPS}+):</b> the last set — as many good-form reps as you can.</li>
-        <li><b>Accessories:</b> every set at the top of the range → add ${inc('accessory')}. A set under the bottom → go lighter.</li>
+        <li><b>Accessories:</b> every set at the top of the range → add ${inc('accessory')} (${formatWeight(MACHINE_STEP[unit], unit)} on machines and cables). A set under the bottom → go lighter.</li>
+        <li><b>Your own step:</b> a gym with other plates or a different stack? Set the step for any exercise in its Set weight sheet.</li>
+        <li><b>Plank:</b> the reps box is seconds. Aim for your shortest hold + ${HOLD_STEP_SECONDS} s; ${HOLD_GOAL_SECONDS} s on every set → add a plate on your back and start again at ${HOLD_START_SECONDS} s.</li>
+        <li><b>Weights are the total on the bar, bar included.</b> Machines: the stack. Dumbbells: one dumbbell. Bodyweight: the weight you add.</li>
         <li><b>${MISSES_BEFORE_DELOAD} misses in a row</b> at the same weight → take ${Math.round((1 - DELOAD_FACTOR) * 100)}% off and build back up. Off days don't count.</li>
         <li><b>Starting weight:</b> work up in sets of ${MAIN_REPS} until the bar slows, then take ${formatWeight(smallestIncrement(unit), unit)} off.</li>
         <li><b>Form and weight both matter:</b> only add weight when every rep is clean.</li>
@@ -114,7 +119,7 @@ export function renderPlan(root, ctx) {
         break;
       }
       case 'swap': openSwapSheet(ctx, b.dataset.slot); break;
-      case 'setweight': openSetWeightSheet(ctx, { exerciseId: b.dataset.ex, name: b.dataset.name, role: b.dataset.role }); break;
+      case 'setweight': openSetWeightSheet(ctx, { exerciseId: b.dataset.ex, name: b.dataset.name, role: b.dataset.role, occurrence: Number(b.dataset.occ) || 0 }); break;
       case 'set-weights': openStartingWeights(ctx, { firstRun: false }); break;
       default: break;
     }

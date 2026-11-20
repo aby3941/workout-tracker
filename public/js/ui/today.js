@@ -3,18 +3,20 @@
 // plan on every render, so swaps, goal and abs changes flow straight in. Suggestions come from progression.js.
 
 import {
-  DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS,
-  nextWorkout, cyclePosition, roleOf, mainPrescription, accessoryPrescription, incrementCategory,
-  matchExercise, customId, isCustom, exerciseName, normalizeName,
+  DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS, HOLD_GOAL_SECONDS,
+  nextWorkout, cyclePosition, roleOf, mainPrescription, accessoryPrescription,
+  matchExercise, searchExercises, customId, isCustom, exerciseName, isTimed, equipmentOf, hasPlateLine,
 } from '../program.js';
-import { suggestMain, suggestAccessory, applyBaseline, baselineKey, warmupSets, maxWeight, repsToGo } from '../progression.js';
-import { formatWeight, formatNumber, parseWeightInput, incrementFor, smallestIncrement } from '../units.js';
+import {
+  suggestMain, suggestAccessory, suggestTimed, applyBaseline, baselineKey, warmupSets, maxWeight, repsToGo, occurrencesOf,
+} from '../progression.js';
+import { formatWeight, formatNumber, parseWeightInput, stepFor, smallestIncrement, platesText } from '../units.js';
 import { formatDate, formatDateShort, weekdayShort, compareISO, isValidISO, daysBetween } from '../dates.js';
 import { mergeSessions, replaceSession, deleteSession, consumeBaselines, sessionKey } from '../store.js';
 import { html, setHTML, icon, plural, setsLong, focusKey, restoreFocus } from './dom.js';
-import { openSheet, confirmSheet, toast } from './sheets.js';
+import { openSheet, confirmSheet, toast, keepFocusOnTap } from './sheets.js';
 import { openSwapSheet, openSetWeightSheet } from './pickers.js';
-import { dayPlan, dayName } from './model.js';
+import { dayPlan, dayName, partnerOf, trackName } from './model.js';
 
 /** Most sets per exercise (matches the import cap, so every logged workout survives a text backup). */
 const MAX_SETS = 20;
@@ -24,6 +26,10 @@ const BACKUP_DAYS = 7;
 const EXTRA_SETS = 3;
 /** An empty Save this soon after a save is the second tap of a double-tap: ignored, so "Saved" stays on screen. */
 const SAVE_REPEAT_MS = 1500;
+/** How long a just-added card stays highlighted. */
+const FLASH_MS = 1200;
+/** Weight column header by equipment (§17.4): weights are the total on the bar, the stack, one dumbbell, or added. */
+const WEIGHT_HEADS = { barbell: 'Total weight', machine: 'Weight (stack)', cable: 'Weight (stack)', dumbbell: 'Weight (each)', bodyweight: 'Added weight' };
 
 // Screen memory that is not saved: which cards are open, the date editor, inputs holding unreadable text,
 // and when the last save happened.
@@ -141,38 +147,49 @@ function positionOf(state, form) {
   return cyclePosition(form.day, state.sessions.filter((s) => compareISO(s.date, form.date) <= 0));
 }
 
-/** How an entry is shown: role, prescription, rest, swap, superset partner. */
+/**
+ * How an entry is shown: role, track occurrence, prescription, rest, swap, superset partner, equipment, plate line.
+ * The occurrence is the entry's place among the form's entries of the same exercise — the order it is saved in,
+ * so it is the track it will be logged to (§17.1).
+ */
 function entryInfo(form, entry, plan, index) {
   const role = roleOf(form.day, entry.exerciseId);
+  const track = {
+    role, occurrence: occurrencesOf(form.entries)[form.entries.indexOf(entry)] ?? 0,
+    timed: isTimed(entry.exerciseId), equipment: equipmentOf(entry.exerciseId), plates: hasPlateLine(entry.exerciseId),
+  };
   if (role === 'main') {
     const planned = DAYS[form.day].mainSets;
-    return { role, main: true, rx: null, plannedSets: planned, prescription: mainPrescription(planned), rest: REST.main, swappable: false, superset: null, extra: false };
+    return { ...track, main: true, rx: null, plannedSets: planned, prescription: mainPrescription(planned), rest: REST.main, swappable: false, superset: null, extra: false };
   }
   const item = index.get(entry.uid);
   const live = item && item.exerciseId === entry.exerciseId ? item : null;
   const base = entry.slotKey && SLOTS[entry.slotKey];
   if (!live && !base) {
-    return { role, main: false, rx: null, plannedSets: entry.sets.length, prescription: 'Extra', rest: REST.accessory, swappable: false, superset: null, extra: true };
+    return { ...track, main: false, rx: null, plannedSets: entry.sets.length, prescription: 'Extra', rest: REST.accessory, swappable: false, superset: null, extra: true };
   }
   const rx = live || { sets: base.sets, repsMin: base.repsMin, repsMax: base.repsMax };
   let superset = null;
   if (live && live.supersetWith) {
-    const partner = plan.items.find((it) => it.exerciseId === live.supersetWith && it !== live);
+    const partner = partnerOf(plan, live);
     superset = partner ? partner.name : exerciseName(live.supersetWith);
   }
   return {
-    role, main: false, rx, plannedSets: rx.sets, prescription: accessoryPrescription(rx), rest: REST.accessory,
+    ...track, main: false, rx, plannedSets: rx.sets, prescription: accessoryPrescription(rx), rest: REST.accessory,
     swappable: Boolean(live ? live.swappable : base.swappable), superset, extra: false,
   };
 }
 
-/** Suggestion for an entry (set weights apply to new workouts only). */
+/** Suggestion for an entry's track (set weights apply to new workouts only). Timed exercises (plank) hold seconds. */
 function suggestionFor(state, form, entry, info, prior) {
   const unit = state.settings.unit;
-  let s = info.role === 'main'
-    ? suggestMain(prior, entry.exerciseId, unit)
-    : suggestAccessory(prior, entry.exerciseId, info.rx || { sets: entry.sets.length, repsMin: null, repsMax: null }, unit);
-  if (!form.editingId) s = applyBaseline(s, state.baselines[baselineKey(entry.exerciseId, info.role)]);
+  const opts = { occurrence: info.occurrence, steps: state.steps };
+  const slot = info.rx || { sets: entry.sets.length, repsMin: null, repsMax: null };
+  let s;
+  if (info.role === 'main') s = suggestMain(prior, entry.exerciseId, unit, opts);
+  else if (info.timed) s = suggestTimed(prior, entry.exerciseId, slot, unit, opts);
+  else s = suggestAccessory(prior, entry.exerciseId, slot, unit, opts);
+  if (!form.editingId) s = applyBaseline(s, state.baselines[baselineKey(entry.exerciseId, info.role, info.occurrence)]);
   return s;
 }
 
@@ -228,11 +245,35 @@ function rangeText(rx) {
   return rx.repsMin === rx.repsMax ? `${rx.repsMax}` : `${rx.repsMin}–${rx.repsMax}`;
 }
 
-/** Headline + detail for a suggestion (wording from the build contract). */
-function suggestionText(s, info, entry, unit) {
+/** Headline + detail for a timed exercise (plank, §17.3): the hold to aim for, in seconds. */
+function timedText(s, unit, inc) {
+  const hold = `${s.targetSeconds} s`;
+  const secs = (item) => `${item.sets.map((x) => x.reps).join(', ')} s`;
+  // The deciding session; when an off day after it was passed over, it is named by its date, not "last time".
+  const went = (item) => (s.offDayIgnored
+    ? `Last time was an off day — going by ${formatDateShort(item.date)}: ${secs(item)}`
+    : `Last time: ${secs(item)} — ${HOLD_GOAL_SECONDS} s on every set adds weight`);
+  switch (s.action) {
+    case 'set':
+      return { headline: `Weight you set: ${s.weight === 0 ? 'bodyweight' : formatWeight(s.weight, unit)}`, detail: `Used for this session only · hold ${hold}` };
+    case 'increase':
+      return { up: true, headline: `Add ${inc()} today → ${formatWeight(s.weight, unit)}`, detail: `Every hold reached ${HOLD_GOAL_SECONDS} s — now hold ${hold} with the weight` };
+    case 'keep':
+      return {
+        headline: s.weight > 0 ? `Hold ${hold} with ${formatWeight(s.weight, unit)}` : `Hold ${hold}`,
+        detail: went(s.last),
+      };
+    default: // 'start'
+      return { headline: `Hold ${hold}`, detail: 'First time — hold as long as you can with good form' };
+  }
+}
+
+/** Headline + detail for a suggestion (wording from the build contract). Increases name the exercise's step. */
+function suggestionText(s, info, entry, unit, steps) {
   const fw = (w) => (w === 0 ? 'bodyweight' : formatWeight(w, unit));
   const reps = (item) => item.sets.map((x) => x.reps).join(', ');
-  const inc = () => formatWeight(incrementFor(incrementCategory(entry.exerciseId, info.role), unit), unit);
+  const inc = () => formatWeight(stepFor(entry.exerciseId, info.role, unit, steps), unit);
+  if (info.timed && s.targetSeconds != null) return timedText(s, unit, inc);
   switch (s.action) {
     case 'set':
       return { headline: `Weight you set: ${fw(s.weight)}`, detail: 'Used for this session only' };
@@ -268,8 +309,8 @@ function suggestionText(s, info, entry, unit) {
   }
 }
 
-function warmupText(weight, unit) {
-  return warmupSets(weight, unit).map((s) => `${formatNumber(s.weight)}×${s.reps}`).join(' · ');
+function warmupText(weight, unit, bar) {
+  return warmupSets(weight, unit, bar).map((s) => `${formatNumber(s.weight)}×${s.reps}`).join(' · ');
 }
 
 // ---------------------------------------------------------------- markup
@@ -281,10 +322,10 @@ function setRow(c, set, i, unit) {
   const { entry, info } = c;
   const n = i + 1;
   const amrap = info.main && n === info.plannedSets;
-  const seconds = entry.exerciseId === 'plank';
-  let repsHint = seconds ? 'sec' : 'reps';
+  const seconds = info.timed;
+  let repsHint = seconds ? String(c.s.targetSeconds ?? '') : 'reps';
   if (info.main) repsHint = amrap ? `${MAIN_REPS}+` : `${MAIN_REPS}`;
-  else if (info.rx && info.rx.repsMin != null) repsHint = rangeText(info.rx);
+  else if (!seconds && info.rx && info.rx.repsMin != null) repsHint = rangeText(info.rx);
   const bad = (k) => (ui.bad.has(`${entry.uid}:${k}${i}`) ? 'true' : 'false');
   const weightText = set.weight == null ? '' : formatNumber(set.weight);
   return html`<div class="set-row">
@@ -293,15 +334,17 @@ function setRow(c, set, i, unit) {
       aria-label="Set ${n} weight" aria-invalid="${bad('w')}" data-kind="w" data-set="${i}" data-fk="${entry.uid}:w${i}"
       value="${weightText}" placeholder="—" style="--len:${fitLen(weightText)}"><small>${unit}</small></label>
     <span class="x" aria-hidden="true">×</span>
-    <label class="field reps${set.reps > 0 ? ' done' : ''}"><input class="r" type="text" inputmode="numeric" autocomplete="off" enterkeyhint="next"
+    <label class="field reps${set.reps > 0 ? ' done' : ''}"><input class="r${seconds ? ' fit' : ''}" type="text" inputmode="numeric" autocomplete="off" enterkeyhint="next"
       aria-label="Set ${n} reps" aria-invalid="${bad('r')}" data-kind="r" data-set="${i}" data-fk="${entry.uid}:r${i}"
-      value="${set.reps == null ? '' : String(set.reps)}" placeholder="${repsHint}">${seconds ? html`<small>sec</small>` : ''}</label>
+      value="${set.reps == null ? '' : String(set.reps)}" placeholder="${repsHint}"${seconds ? html` style="--len:${fitLen(set.reps == null ? repsHint : set.reps)}"` : ''}>${seconds ? html`<small>sec</small>` : ''}</label>
   </div>`;
 }
 
-function cardMarkup(c, unit) {
+function cardMarkup(c, state) {
   const { entry, info, s } = c;
-  const t = suggestionText(s, info, entry, unit);
+  const unit = state.settings.unit;
+  const bar = state.settings.barWeight;
+  const t = suggestionText(s, info, entry, unit, state.steps);
   const swap = info.swappable
     ? html`<button type="button" class="swap" data-act="swap" data-fk="${entry.uid}:swap">${icon('swap')}<span>Swap</span></button>` : '';
   if (!ui.opened.has(entry.uid)) {
@@ -311,8 +354,10 @@ function cardMarkup(c, unit) {
         <p class="cap">${info.prescription} · <span class="suggest-headline">${t.headline}</span></p></div>${swap}</div>
     </section>`;
   }
-  const warm = info.main ? warmupText(entry.sets[0] ? entry.sets[0].weight : null, unit) : '';
-  const seconds = entry.exerciseId === 'plank';
+  const lead = entry.sets[0] ? entry.sets[0].weight : null;
+  const warm = info.main ? warmupText(lead, unit, bar) : '';
+  const plates = info.plates ? platesText(lead, bar, unit) : '';
+  const seconds = info.timed;
   return html`<section class="card ex" aria-label="${entry.name}" data-uid="${entry.uid}">
     <div class="ex-head">
       <div class="ex-title"><h2 class="ex-name">${entry.name}</h2>
@@ -327,9 +372,11 @@ function cardMarkup(c, unit) {
     </div>
     ${info.main ? html`<p class="warm" data-warm ${warm ? '' : 'hidden'}>Warm-up: <span>${warm}</span></p>` : ''}
     <div class="sets">
-      <div class="set-row head" aria-hidden="true"><span>Set</span><span>Weight</span><span></span><span>${seconds ? 'Seconds' : 'Reps'}</span></div>
+      <div class="set-row head" aria-hidden="true"><span>Set</span><span>${WEIGHT_HEADS[info.equipment] || 'Weight'}</span><span></span><span>${seconds ? 'Seconds' : 'Reps'}</span></div>
       ${entry.sets.map((set, i) => setRow(c, set, i, unit))}
     </div>
+    ${info.plates ? html`<p class="plates" data-plates ${plates ? '' : 'hidden'}>${plates}</p>` : ''}
+    ${info.equipment === 'bodyweight' ? html`<p class="hint">Added weight: 0 = bodyweight only.</p>` : ''}
     ${info.main ? html`<p class="hint">AMRAP = as many good-form reps as you can.</p>` : ''}
     <div class="set-actions">
       <button type="button" class="link" data-act="add-set" data-fk="${entry.uid}:add" ${entry.sets.length >= MAX_SETS ? 'disabled' : ''}>+ Set</button>
@@ -377,7 +424,7 @@ export function renderToday(root, ctx) {
       <button type="button" class="link" data-act="export-now">Export now</button></div>` : ''}
     <label class="toggle-row"><span><b>Off day</b><span class="muted">Bad sleep or food — misses won't count</span></span>
       <input type="checkbox" class="switch" role="switch" aria-label="Off day" data-input="offday" ${form.offDay ? 'checked' : ''}></label>
-    <div class="cards">${cards.map((c) => cardMarkup(c, unit))}</div>
+    <div class="cards">${cards.map((c) => cardMarkup(c, state))}</div>
     <button type="button" class="add" data-act="add-ex" data-fk="add-ex">+ Add exercise</button>
     <label class="note-field"><span>Note</span>
       <textarea rows="2" aria-label="Note" data-input="note" placeholder="Optional — e.g. slept badly">${form.note || ''}</textarea></label>
@@ -404,7 +451,7 @@ export function renderToday(root, ctx) {
     cards = cardsFor(ctx.state, form);
     const c = cards.find((x) => x.entry === entry);
     const tpl = document.createElement('template');
-    setHTML(tpl, cardMarkup(c, unit));
+    setHTML(tpl, cardMarkup(c, ctx.state));
     sec.replaceWith(tpl.content);
     restoreFocus(root, key);
   };
@@ -444,9 +491,15 @@ export function renderToday(root, ctx) {
         });
         const warm = hit.sec.querySelector('[data-warm]');
         if (warm) {
-          const textNow = warmupText(set.weight, unit);
+          const textNow = warmupText(set.weight, unit, ctx.state.settings.barWeight);
           warm.hidden = !textNow;
           warm.querySelector('span').textContent = textNow;
+        }
+        const plates = hit.sec.querySelector('[data-plates]');
+        if (plates) {
+          const textNow = platesText(set.weight, ctx.state.settings.barWeight, unit);
+          plates.hidden = !textNow;
+          plates.textContent = textNow;
         }
       }
     } else {
@@ -456,6 +509,7 @@ export function renderToday(root, ctx) {
       ui.bad[bad ? 'add' : 'delete'](`${hit.entry.uid}:r${i}`);
       set.reps = reps;
       t.closest('.field').classList.toggle('done', reps > 0);
+      if (t.classList.contains('fit')) t.style.setProperty('--len', String(fitLen(t.value || t.placeholder)));
     }
     changed();
   });
@@ -513,10 +567,12 @@ export function renderToday(root, ctx) {
         break;
       case 'setweight':
         if (hit) {
-          const info = entryInfo(form, hit.entry, dayPlan(ctx.state, form.day), planIndex(dayPlan(ctx.state, form.day)));
+          const plan = dayPlan(ctx.state, form.day);
+          const info = entryInfo(form, hit.entry, plan, planIndex(plan));
           openSetWeightSheet(ctx, {
-            exerciseId: hit.entry.exerciseId, name: hit.entry.name, role: info.role,
-            onSaved: () => { if (ctx.state.draft === form) { prefill(ctx.state, form, hit.entry); ctx.saveSoon(); } },
+            exerciseId: hit.entry.exerciseId, name: trackName(hit.entry.name, info.occurrence, info.superset), role: info.role, occurrence: info.occurrence,
+            // A new step changes every card of this exercise, so all untyped weights follow the new suggestions.
+            onSaved: () => { if (ctx.state.draft === form) { prefill(ctx.state, form); ctx.saveSoon(); } },
           });
         }
         break;
@@ -606,6 +662,36 @@ function openDayPicker(ctx, form, changed) {
 
 const GROUP_LABELS = [['pull', 'Pull'], ['push', 'Push'], ['legs', 'Legs'], ['abs', 'Abs']];
 
+/**
+ * What the Add exercise box adds for typed text (§17.5): a catalog name or alias → that exercise; else the single
+ * exercise the search still shows; else the text as the user's own exercise. Empty → null.
+ * @param {string} text
+ * @returns {{exerciseId: string, name: string, custom: boolean}|null}
+ */
+function typedExercise(text) {
+  const name = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!name) return null;
+  const id = matchExercise(name);
+  const found = id ? [id] : searchExercises(name);
+  if (found.length === 1) return { exerciseId: found[0], name: EXERCISES[found[0]].name, custom: false };
+  return { exerciseId: customId(name), name, custom: true };
+}
+
+/** Scroll a just-added card to the middle of the screen and highlight it briefly. */
+function revealCard(uid) {
+  const sec = document.querySelector(`#view section[data-uid="${CSS.escape(uid)}"]`);
+  if (!sec) return;
+  const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  sec.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+  sec.classList.add('flash');
+  setTimeout(() => sec.classList.remove('flash'), FLASH_MS);
+}
+
+/**
+ * Add exercise sheet (§17.5). The search box is not focused when the sheet opens (on the iPhone the keyboard would
+ * cover the list); typing filters the list; Enter / Go adds what `typedExercise` finds; an empty box adds nothing.
+ * Option rows answer the first tap even while the search box has focus.
+ */
 function openAddExercise(ctx, form, changed) {
   const all = Object.values(EXERCISES);
   const { el, close } = openSheet({
@@ -613,12 +699,13 @@ function openAddExercise(ctx, form, changed) {
     className: 'tall',
     body: html`<form class="add-form">
         <label class="field-label" for="add-ex-name">Exercise name</label>
-        <div class="row-input"><input id="add-ex-name" class="text-input" autocomplete="off" autocapitalize="sentences" maxlength="60"
-          placeholder="Search, or type your own" data-autofocus><button type="submit" class="btn primary">Add</button></div>
-        <p class="err" hidden>Type a name or pick one below.</p>
+        <div class="row-input"><input id="add-ex-name" class="text-input" type="text" autocomplete="off" autocapitalize="sentences" maxlength="60"
+          enterkeyhint="go" placeholder="Search, or type your own"><button type="submit" class="btn primary" disabled>Add</button></div>
+        <p class="cap add-hint" hidden></p>
       </form>
-      <div class="opts pick-list">${GROUP_LABELS.map(([g, label]) => html`<p class="group-label">${label}</p>
-        ${all.filter((x) => x.group === g).map((x) => html`<button type="button" class="opt" data-ex="${x.id}"><span>${x.name}</span></button>`)}`)}</div>
+      <div class="opts pick-list">${GROUP_LABELS.map(([g, label]) => html`<div class="pick-group"><p class="group-label">${label}</p>
+        ${all.filter((x) => x.group === g).map((x) => html`<button type="button" class="opt" data-ex="${x.id}"><span>${x.name}</span></button>`)}</div>`)}
+        <p class="cap no-match" hidden>No match in the list — Add saves it as your own exercise.</p></div>
       <button type="button" class="btn wide" data-act="cancel">Cancel</button>`,
   });
   const add = (exerciseId, name) => {
@@ -630,20 +717,28 @@ function openAddExercise(ctx, form, changed) {
     ui.opened.add(entry.uid);
     changed();
     ctx.render();
+    revealCard(entry.uid);
     toast(`Added ${name}`);
   };
   const input = el.querySelector('input');
+  const submit = el.querySelector('button[type="submit"]');
+  const hint = el.querySelector('.add-hint');
   input.addEventListener('input', () => {
-    const q = normalizeName(input.value);
-    for (const b of el.querySelectorAll('[data-ex]')) b.hidden = Boolean(q) && !normalizeName(b.textContent).includes(q);
+    const shown = new Set(searchExercises(input.value));
+    for (const b of el.querySelectorAll('[data-ex]')) b.hidden = !shown.has(b.dataset.ex);
+    for (const g of el.querySelectorAll('.pick-group')) g.hidden = !g.querySelector('[data-ex]:not([hidden])');
+    el.querySelector('.no-match').hidden = shown.size > 0;
+    const pick = typedExercise(input.value);
+    submit.disabled = !pick;
+    hint.hidden = !pick;
+    hint.textContent = pick ? `Add (or Enter) adds ${pick.custom ? `“${pick.name}” as your own exercise` : pick.name}` : '';
   });
   el.querySelector('form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const name = input.value.trim().replace(/\s+/g, ' ');
-    if (!name) { el.querySelector('.err').hidden = false; return; }
-    const id = matchExercise(name);
-    add(id || customId(name), id ? EXERCISES[id].name : name);
+    const pick = typedExercise(input.value);
+    if (pick) add(pick.exerciseId, pick.name);
   });
+  keepFocusOnTap(el.querySelector('.pick-list'));
   el.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;

@@ -5,57 +5,100 @@ import { sortByDate } from './dates.js';
 
 // ---------------------------------------------------------------- catalog
 
-/** [id, display name, group, category, aliases] */
+/**
+ * [id, display name, group, category, equipment, aliases].
+ * `equipment` ('barbell' | 'dumbbell' | 'machine' | 'cable' | 'bodyweight' | 'band') sets the default weight step
+ * (units.js `stepFor`) and how the weight column is labelled ("Total weight" on a barbell). Custom exercises have none.
+ */
 const CATALOG = [
-  ['deadlift', 'Deadlift', 'pull', 'deadlift', ['dl', 'deads', 'conventional deadlift']],
-  ['barbellRow', 'Barbell row', 'pull', 'upper', ['row', 'bb row', 'bent over row', 'bor', 'pendlay row', 'barbell bent over row']],
-  ['bench', 'Bench press', 'push', 'upper', ['bench', 'bp', 'flat bench', 'flat bench press', 'barbell bench press']],
-  ['ohp', 'Overhead press', 'push', 'upper', ['press', 'military press', 'shoulder press', 'standing press', 'ohp']],
-  ['squat', 'Squat', 'legs', 'lower', ['sq', 'back squat', 'barbell squat']],
-  ['latPulldown', 'Lat pulldown', 'pull', 'accessory', ['pulldown', 'pull down', 'lat pull down', 'lpd']],
-  ['pullUp', 'Pull-up', 'pull', 'accessory', ['pullup', 'pull up']],
-  ['chinUp', 'Chin-up', 'pull', 'accessory', ['chinup', 'chin up']],
-  ['cableRow', 'Seated cable row', 'pull', 'accessory', ['cable row', 'seated row']],
-  ['chestSupportedRow', 'Chest-supported row', 'pull', 'accessory', ['chest supported row', 'cs row']],
-  ['dbRow', 'Dumbbell row', 'pull', 'accessory', ['db row', 'one arm row']],
-  ['tbarRow', 'T-bar row', 'pull', 'accessory', ['t bar row', 'tbar row']],
-  ['facePull', 'Face pull', 'pull', 'accessory', ['facepull', 'fp']],
-  ['rearDeltFly', 'Rear delt fly', 'pull', 'accessory', ['rear delt flye', 'reverse fly']],
-  ['bandPullApart', 'Band pull-apart', 'pull', 'accessory', ['pull apart']],
-  ['hammerCurl', 'Hammer curl', 'pull', 'accessory', ['hammers']],
-  ['dbCurl', 'Dumbbell curl', 'pull', 'accessory', ['db curl', 'curl', 'bicep curl', 'biceps curl']],
-  ['barbellCurl', 'Barbell curl', 'pull', 'accessory', ['bb curl']],
-  ['ezCurl', 'EZ-bar curl', 'pull', 'accessory', ['ez curl', 'ez bar curl']],
-  ['cableCurl', 'Cable curl', 'pull', 'accessory', []],
-  ['preacherCurl', 'Preacher curl', 'pull', 'accessory', []],
-  ['inclineCurl', 'Incline dumbbell curl', 'pull', 'accessory', ['incline curl', 'incline db curl']],
-  ['concentrationCurl', 'Concentration curl', 'pull', 'accessory', []],
-  ['inclineDbPress', 'Incline dumbbell press', 'push', 'accessory', ['incline db press', 'incline press', 'incline']],
-  ['landminePress', 'Landmine press', 'push', 'accessory', ['landmine']],
-  ['tricepsPushdown', 'Triceps pushdown', 'push', 'accessory', ['pushdown', 'push down', 'tricep pushdown', 'rope pushdown']],
-  ['ohTricepsExt', 'Overhead triceps extension', 'push', 'accessory', ['overhead tricep extension', 'overhead extension', 'oh extension', 'oh ext']],
-  ['skullcrusher', 'Skullcrusher', 'push', 'accessory', ['skull crusher']],
-  ['lyingTricepsExt', 'Lying triceps extension', 'push', 'accessory', ['lying tricep extension']],
-  ['dbTricepsExt', 'Dumbbell triceps extension', 'push', 'accessory', ['db triceps extension', 'db tricep extension']],
-  ['lateralRaise', 'Lateral raise', 'push', 'accessory', ['lat raise', 'laterals', 'side raise']],
-  ['frontRaise', 'Front raise', 'push', 'accessory', ['front raises']],
-  ['rdl', 'Romanian deadlift', 'legs', 'accessory', ['rdl', 'romanian']],
-  ['legPress', 'Leg press', 'legs', 'accessory', ['lp']],
-  ['frontSquat', 'Front squat', 'legs', 'accessory', ['fs']],
-  ['legCurl', 'Leg curl', 'legs', 'accessory', ['hamstring curl', 'lying leg curl', 'seated leg curl']],
-  ['ghr', 'Glute-ham raise', 'legs', 'accessory', ['ghr', 'glute ham raise']],
-  ['calfRaise', 'Calf raise', 'legs', 'accessory', ['calves', 'calf', 'standing calf raise']],
-  ['seatedCalfRaise', 'Seated calf raise', 'legs', 'accessory', []],
-  ['legPressCalfRaise', 'Leg press calf raise', 'legs', 'accessory', []],
-  ['abWheel', 'Ab wheel rollout', 'abs', 'accessory', ['ab wheel', 'rollout', 'ab rollout']],
-  ['plank', 'Plank', 'abs', 'accessory', []],
-  ['hangingLegRaise', 'Hanging leg raise', 'abs', 'accessory', ['hlr', 'leg raise', 'leg raises']],
+  ['deadlift', 'Deadlift', 'pull', 'deadlift', 'barbell', ['dl', 'deads', 'conventional deadlift']],
+  ['barbellRow', 'Barbell row', 'pull', 'upper', 'barbell', ['row', 'bb row', 'bent over row', 'bor', 'pendlay row', 'barbell bent over row']],
+  ['bench', 'Bench press', 'push', 'upper', 'barbell', ['bench', 'bp', 'flat bench', 'flat bench press', 'barbell bench press']],
+  ['ohp', 'Overhead press', 'push', 'upper', 'barbell', ['press', 'military press', 'shoulder press', 'standing press', 'ohp']],
+  ['squat', 'Squat', 'legs', 'lower', 'barbell', ['sq', 'back squat', 'barbell squat']],
+  ['latPulldown', 'Lat pulldown', 'pull', 'accessory', 'cable', ['pulldown', 'pull down', 'lat pull down', 'lpd']],
+  ['pullUp', 'Pull-up', 'pull', 'accessory', 'bodyweight', ['pullup', 'pull up']],
+  ['chinUp', 'Chin-up', 'pull', 'accessory', 'bodyweight', ['chinup', 'chin up']],
+  ['cableRow', 'Seated cable row', 'pull', 'accessory', 'cable', ['cable row', 'seated row']],
+  ['chestSupportedRow', 'Chest-supported row', 'pull', 'accessory', 'dumbbell', ['chest supported row', 'cs row']],
+  ['dbRow', 'Dumbbell row', 'pull', 'accessory', 'dumbbell', ['db row', 'one arm row']],
+  ['tbarRow', 'T-bar row', 'pull', 'accessory', 'dumbbell', ['t bar row', 'tbar row']],
+  ['facePull', 'Face pull', 'pull', 'accessory', 'cable', ['facepull', 'fp']],
+  ['rearDeltFly', 'Rear delt fly', 'pull', 'accessory', 'dumbbell', ['rear delt flye', 'reverse fly']],
+  ['bandPullApart', 'Band pull-apart', 'pull', 'accessory', 'band', ['pull apart']],
+  ['hammerCurl', 'Hammer curl', 'pull', 'accessory', 'dumbbell', ['hammers']],
+  ['dbCurl', 'Dumbbell curl', 'pull', 'accessory', 'dumbbell', ['db curl', 'curl', 'bicep curl', 'biceps curl']],
+  ['barbellCurl', 'Barbell curl', 'pull', 'accessory', 'barbell', ['bb curl']],
+  ['ezCurl', 'EZ-bar curl', 'pull', 'accessory', 'barbell', ['ez curl', 'ez bar curl']],
+  ['cableCurl', 'Cable curl', 'pull', 'accessory', 'cable', []],
+  ['preacherCurl', 'Preacher curl', 'pull', 'accessory', 'dumbbell', []],
+  ['inclineCurl', 'Incline dumbbell curl', 'pull', 'accessory', 'dumbbell', ['incline curl', 'incline db curl']],
+  ['concentrationCurl', 'Concentration curl', 'pull', 'accessory', 'dumbbell', []],
+  ['inclineDbPress', 'Incline dumbbell press', 'push', 'accessory', 'dumbbell', ['incline db press', 'incline press', 'incline']],
+  ['landminePress', 'Landmine press', 'push', 'accessory', 'barbell', ['landmine']],
+  ['tricepsPushdown', 'Triceps pushdown', 'push', 'accessory', 'cable', ['pushdown', 'push down', 'tricep pushdown', 'rope pushdown']],
+  ['ohTricepsExt', 'Overhead triceps extension', 'push', 'accessory', 'dumbbell', ['overhead tricep extension', 'overhead extension', 'oh extension', 'oh ext']],
+  ['skullcrusher', 'Skullcrusher', 'push', 'accessory', 'barbell', ['skull crusher']],
+  ['lyingTricepsExt', 'Lying triceps extension', 'push', 'accessory', 'dumbbell', ['lying tricep extension']],
+  ['dbTricepsExt', 'Dumbbell triceps extension', 'push', 'accessory', 'dumbbell', ['db triceps extension', 'db tricep extension']],
+  ['lateralRaise', 'Lateral raise', 'push', 'accessory', 'dumbbell', ['lat raise', 'laterals', 'side raise']],
+  ['frontRaise', 'Front raise', 'push', 'accessory', 'dumbbell', ['front raises']],
+  ['rdl', 'Romanian deadlift', 'legs', 'accessory', 'barbell', ['rdl', 'romanian']],
+  ['legPress', 'Leg press', 'legs', 'accessory', 'machine', ['lp']],
+  ['frontSquat', 'Front squat', 'legs', 'accessory', 'barbell', ['fs']],
+  ['legCurl', 'Leg curl', 'legs', 'accessory', 'machine', ['hamstring curl', 'lying leg curl', 'seated leg curl']],
+  ['ghr', 'Glute-ham raise', 'legs', 'accessory', 'bodyweight', ['ghr', 'glute ham raise']],
+  ['calfRaise', 'Calf raise', 'legs', 'accessory', 'machine', ['calves', 'calf', 'standing calf raise']],
+  ['seatedCalfRaise', 'Seated calf raise', 'legs', 'accessory', 'machine', []],
+  ['legPressCalfRaise', 'Leg press calf raise', 'legs', 'accessory', 'machine', []],
+  ['abWheel', 'Ab wheel rollout', 'abs', 'accessory', 'bodyweight', ['ab wheel', 'rollout', 'ab rollout']],
+  ['plank', 'Plank', 'abs', 'accessory', 'bodyweight', []],
+  ['hangingLegRaise', 'Hanging leg raise', 'abs', 'accessory', 'bodyweight', ['hlr', 'leg raise', 'leg raises']],
 ];
 
-/** Exercise catalog keyed by id → {id, name, group, category, aliases}. */
+/** Timed exercises: the reps field holds seconds (§17.3). */
+const TIMED = new Set(['plank']);
+
+/** Exercise catalog keyed by id → {id, name, group, category, equipment, timed, aliases}. */
 export const EXERCISES = Object.freeze(Object.fromEntries(
-  CATALOG.map(([id, name, group, category, aliases]) => [id, Object.freeze({ id, name, group, category, aliases: Object.freeze([...aliases]) })]),
+  CATALOG.map(([id, name, group, category, equipment, aliases]) => [id, Object.freeze({
+    id, name, group, category, equipment, timed: TIMED.has(id), aliases: Object.freeze([...aliases]),
+  })]),
 ));
+
+/**
+ * Equipment of an exercise ('barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'band'); custom → null.
+ * @param {string} exerciseId
+ * @returns {string|null}
+ */
+export function equipmentOf(exerciseId) {
+  return EXERCISES[exerciseId] ? EXERCISES[exerciseId].equipment : null;
+}
+
+/**
+ * Barbell exercises not done on a standard bar loaded on both ends: an EZ bar (EZ-bar curl, skullcrusher — lighter
+ * than a 20 kg bar) or one end in a landmine. They keep "Total weight" but get no plate line.
+ */
+const NOT_STANDARD_BAR = new Set(['ezCurl', 'skullcrusher', 'landminePress']);
+
+/**
+ * True when the plate line ("= 20 kg bar + 21.25 kg each side", §17.4) applies: a barbell exercise on a standard
+ * bar loaded on both ends. EZ-bar curl, skullcrusher and landmine press → false; non-barbell and custom → false.
+ * @param {string} exerciseId
+ * @returns {boolean}
+ */
+export function hasPlateLine(exerciseId) {
+  return equipmentOf(exerciseId) === 'barbell' && !NOT_STANDARD_BAR.has(exerciseId);
+}
+
+/**
+ * True for timed exercises (the reps field is seconds held), e.g. plank.
+ * @param {string} exerciseId
+ * @returns {boolean}
+ */
+export function isTimed(exerciseId) {
+  return Boolean(EXERCISES[exerciseId] && EXERCISES[exerciseId].timed);
+}
 
 // ---------------------------------------------------------------- program rules
 
@@ -80,6 +123,11 @@ export const WARMUP_RAMP = Object.freeze([
 
 /** Reps on the empty-bar warm-up set. */
 export const WARMUP_BAR_REPS = 10;
+
+/** Timed holds (§17.3): the goal on every set, where a new weight starts, and how much each session adds. */
+export const HOLD_GOAL_SECONDS = 60;
+export const HOLD_START_SECONDS = 30;
+export const HOLD_STEP_SECONDS = 5;
 
 /** Main lifts in the order the Progress tab shows them. */
 export const MAIN_LIFTS = Object.freeze(['squat', 'bench', 'deadlift', 'ohp', 'barbellRow']);
@@ -200,6 +248,22 @@ export function matchExercise(name) {
     if (NAME_INDEX.has(single)) return NAME_INDEX.get(single);
   }
   return null;
+}
+
+/**
+ * Catalog ids whose display name or an alias contains the typed text (both normalised), in catalog order.
+ * Empty text → every id. Used by the Add exercise search ("skull" → Skullcrusher). Like `matchExercise`, a plural
+ * with no hits is retried without its trailing "s" ("face pulls" → Face pull).
+ * @param {string} query
+ * @returns {string[]}
+ */
+export function searchExercises(query) {
+  const q = normalizeName(query);
+  const ids = Object.keys(EXERCISES);
+  if (!q) return ids;
+  const hits = (text) => ids.filter((id) => [EXERCISES[id].name, ...EXERCISES[id].aliases].some((n) => normalizeName(n).includes(text)));
+  const found = hits(q);
+  return found.length || !(q.length > 1 && q.endsWith('s')) ? found : hits(q.slice(0, -1));
 }
 
 /**
@@ -331,9 +395,11 @@ export function daySlotKeys(dayId, abs = false) {
  * The resolved plan for a day after swaps, goal and the abs add-on.
  * @param {string} dayId
  * @param {{choices?: Object<string,string>, goal?: string, abs?: boolean}} [opts]
+ * Each item's `occurrence` is its index among the day's items with the same exercise (§17.1: Push days have
+ * Lateral raise twice — push.side1 is 0, push.side2 is 1), matching the order Today saves entries in.
  * @returns {{day: string, main: {exerciseId: string, sets: number, reps: number},
  *   items: Array<{slotKey: string, exerciseId: string, name: string, sets: number, repsMin: number|null,
- *   repsMax: number|null, compound: boolean, swappable: boolean, supersetWith: string|null}>}}
+ *   repsMax: number|null, compound: boolean, swappable: boolean, supersetWith: string|null, occurrence: number}>}}
  */
 export function getDayPlan(dayId, { choices = {}, goal = 'standard', abs = false } = {}) {
   const day = DAYS[dayId];
@@ -341,6 +407,7 @@ export function getDayPlan(dayId, { choices = {}, goal = 'standard', abs = false
   const keys = daySlotKeys(dayId, abs);
   const resolved = Object.fromEntries(keys.map((k) => [k, resolveSlot(SLOTS[k], (choices || {})[k])]));
   const items = [];
+  const seen = new Map(); // exerciseId → items so far (the main lift is its own role, so it is not counted)
   for (const key of keys) {
     const s = SLOTS[key];
     const rx = applyGoal(s, goal);
@@ -349,10 +416,12 @@ export function getDayPlan(dayId, { choices = {}, goal = 'standard', abs = false
       let supersetWith = null;
       if (exercises.length > 1) supersetWith = exercises[(i + 1) % exercises.length].exerciseId;
       else if (s.supersetWith && resolved[s.supersetWith]) supersetWith = resolved[s.supersetWith][0].exerciseId;
+      const occurrence = seen.get(ex.exerciseId) || 0;
+      seen.set(ex.exerciseId, occurrence + 1);
       items.push({
         slotKey: key, exerciseId: ex.exerciseId, name: ex.name,
         sets: rx.sets, repsMin: rx.repsMin, repsMax: rx.repsMax,
-        compound: s.compound, swappable: s.swappable, supersetWith,
+        compound: s.compound, swappable: s.swappable, supersetWith, occurrence,
       });
     });
   }

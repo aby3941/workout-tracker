@@ -1,12 +1,12 @@
 // Shared sheets: Swap (Today + Plan), Set weight (Today, Plan, Progress) and the starting-weights list
 // (first open + Plan → Set weights).
 
-import { SLOTS, DAY_ORDER, isCustom, accessoryPrescription } from '../program.js';
+import { SLOTS, DAY_ORDER, isCustom, accessoryPrescription, equipmentOf } from '../program.js';
 import { baselineKey } from '../progression.js';
-import { setBaseline, clearBaseline } from '../store.js';
-import { formatNumber, formatWeight, parseWeightInput } from '../units.js';
+import { setBaseline, clearBaseline, setStep, clearStep } from '../store.js';
+import { formatNumber, formatWeight, parseWeightInput, stepFor, isValidStep } from '../units.js';
 import { html, icon } from './dom.js';
-import { openSheet, toast } from './sheets.js';
+import { openSheet, toast, keepFocusOnTap } from './sheets.js';
 import { dayPlan, slotPositions, dayList, weightTargets } from './model.js';
 
 let uid = 0;
@@ -57,7 +57,10 @@ export function openSwapSheet(ctx, slotKey, { onPicked } = {}) {
     if (onPicked) onPicked(slotKey);
     close();
     ctx.render();
+    const items = day ? dayPlan(ctx.state, day).items.filter((it) => it.slotKey === slotKey) : [];
+    if (items.length) toast(`Swapped to ${items.map((it) => it.name).join(' + ')} — from now on`);
   };
+  keepFocusOnTap(el.querySelector('.opts'));
   const form = el.querySelector('.custom-row');
   el.addEventListener('click', (e) => {
     const b = e.target.closest('button');
@@ -80,23 +83,39 @@ export function openSwapSheet(ctx, slotKey, { onPicked } = {}) {
   });
 }
 
+/** What a weight step means for the exercise's equipment (sheet copy). */
+const STEP_HINTS = {
+  machine: 'one plate on the stack', cable: 'one plate on the stack', barbell: 'the smallest plates you have, both sides together',
+  dumbbell: 'the jump to the next dumbbell',
+};
+
 /**
- * Set weight sheet: the weight for an exercise's next session (used once, then progression takes over).
+ * Set weight sheet: the weight for one track's next session (used once, then progression takes over), and the
+ * exercise's own weight step (§17.2: kept until changed; applies to every track of the exercise).
+ * Save with only the step filled keeps the set weight as it was; an emptied box clears what it held.
  * @param {object} ctx
- * @param {{exerciseId: string, name: string, role: 'main'|'accessory', onSaved?: () => void}} target
+ * @param {{exerciseId: string, name: string, role: 'main'|'accessory', occurrence?: number, onSaved?: () => void}} target
  */
-export function openSetWeightSheet(ctx, { exerciseId, name, role, onSaved }) {
+export function openSetWeightSheet(ctx, { exerciseId, name, role, occurrence = 0, onSaved }) {
   const unit = ctx.state.settings.unit;
-  const current = ctx.state.baselines[baselineKey(exerciseId, role)];
+  const current = ctx.state.baselines[baselineKey(exerciseId, role, occurrence)];
+  const ownStep = ctx.state.steps && isValidStep(ctx.state.steps[exerciseId]) ? ctx.state.steps[exerciseId] : null;
+  const defaultStep = stepFor(exerciseId, role, unit, {});
+  const hint = STEP_HINTS[equipmentOf(exerciseId)];
   const inputId = nextId('setw');
+  const stepId = nextId('step');
   const { el, close } = openSheet({
     title: `Set weight: ${name}`,
     body: html`<form class="setw">
       <label class="field-label" for="${inputId}">Weight (${unit})</label>
       <div class="input-unit"><input id="${inputId}" class="text-input big-input" inputmode="decimal" autocomplete="off" enterkeyhint="done"
-        value="${current ? formatNumber(current.weight) : ''}" placeholder="0" data-autofocus><span>${unit}</span></div>
-      <p class="err" hidden>Enter a weight like 62.5 (0 means bodyweight).</p>
+        data-field="weight" value="${current ? formatNumber(current.weight) : ''}" placeholder="0" data-autofocus><span>${unit}</span></div>
       <p class="sheet-text">Used for your next session only. After that the app takes over again.</p>
+      <label class="field-label" for="${stepId}">Weight step (${unit})</label>
+      <div class="input-unit"><input id="${stepId}" class="text-input" inputmode="decimal" autocomplete="off" enterkeyhint="done"
+        data-field="step" value="${ownStep != null ? formatNumber(ownStep) : ''}" placeholder="${formatNumber(defaultStep)}"><span>${unit}</span></div>
+      <p class="sheet-text">How much it goes up or down each time${hint ? ` — ${hint}` : ''}. Empty = ${formatWeight(defaultStep, unit)}. Kept until you change it.</p>
+      <p class="err" hidden>Use numbers like 62.5 (a weight of 0 means bodyweight; a step must be more than 0).</p>
       <div class="sheet-actions">
         <button type="submit" class="btn primary">Save</button>
         ${current ? html`<button type="button" class="btn" data-act="clear">Clear</button>` : ''}
@@ -111,22 +130,47 @@ export function openSetWeightSheet(ctx, { exerciseId, name, role, onSaved }) {
     ctx.render();
     toast(message);
   };
+  const weightInput = el.querySelector('[data-field="weight"]');
+  const stepInput = el.querySelector('[data-field="step"]');
   el.querySelector('form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const input = el.querySelector('input');
-    const w = parseWeightInput(input.value);
-    if (w == null) {
-      input.setAttribute('aria-invalid', 'true');
+    const wText = weightInput.value.trim();
+    const sText = stepInput.value.trim();
+    const w = parseWeightInput(wText);
+    const step = parseWeightInput(sText);
+    const badWeight = wText !== '' && w == null;
+    const badStep = sText !== '' && !isValidStep(step);
+    const nothing = wText === '' && sText === '' && !current && ownStep == null;
+    weightInput.setAttribute('aria-invalid', String(badWeight || nothing));
+    stepInput.setAttribute('aria-invalid', String(badStep));
+    if (badWeight || badStep || nothing) {
       el.querySelector('.err').hidden = false;
-      input.focus();
+      (badStep && !badWeight ? stepInput : weightInput).focus();
       return;
     }
-    done(setBaseline(ctx.state, exerciseId, role, w, ctx.today()), `${name}: ${formatWeight(w, unit)} next session`);
+    let next = ctx.state;
+    const said = [];
+    if (w != null) {
+      next = setBaseline(next, exerciseId, role, w, ctx.today(), occurrence);
+      said.push(`${formatWeight(w, unit)} next session`);
+    } else if (current) {
+      next = clearBaseline(next, exerciseId, role, occurrence);
+      said.push('set weight cleared');
+    }
+    if (step != null && step !== ownStep) {
+      next = setStep(next, exerciseId, step);
+      said.push(`steps of ${formatWeight(step, unit)}`);
+    } else if (step == null && ownStep != null) {
+      next = clearStep(next, exerciseId);
+      said.push(`steps of ${formatWeight(defaultStep, unit)}`);
+    }
+    if (!said.length) { close(); return; }
+    done(next, `${name}: ${said.join(' · ')}`);
   });
   el.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
-    if (b.dataset.act === 'clear') done(clearBaseline(ctx.state, exerciseId, role), `${name}: set weight cleared`);
+    if (b.dataset.act === 'clear') done(clearBaseline(ctx.state, exerciseId, role, occurrence), `${name}: set weight cleared`);
     if (b.dataset.act === 'cancel') close();
   });
 }
@@ -143,7 +187,7 @@ export function openStartingWeights(ctx, { firstRun = false } = {}) {
   const unit = state.settings.unit;
   const { mains, accessories } = weightTargets(state);
   const row = (t, i) => {
-    const b = state.baselines[baselineKey(t.exerciseId, t.role)];
+    const b = state.baselines[baselineKey(t.exerciseId, t.role, t.occurrence)];
     return html`<label class="sw-row" for="sw-${i}"><span>${t.name}</span>
       <span class="input-unit sm"><input id="sw-${i}" class="text-input" inputmode="decimal" autocomplete="off" data-i="${i}"
         aria-label="${t.name} starting weight" value="${b ? formatNumber(b.weight) : ''}" placeholder="—"><span>${unit}</span></span></label>`;
@@ -180,8 +224,8 @@ export function openStartingWeights(ctx, { firstRun = false } = {}) {
       const w = parseWeightInput(text);
       input.removeAttribute('aria-invalid');
       if (text && w == null) { input.setAttribute('aria-invalid', 'true'); bad = true; continue; }
-      if (w != null) next = setBaseline(next, t.exerciseId, t.role, w, ctx.today());
-      else if (next.baselines[baselineKey(t.exerciseId, t.role)]) next = clearBaseline(next, t.exerciseId, t.role);
+      if (w != null) next = setBaseline(next, t.exerciseId, t.role, w, ctx.today(), t.occurrence);
+      else if (next.baselines[baselineKey(t.exerciseId, t.role, t.occurrence)]) next = clearBaseline(next, t.exerciseId, t.role, t.occurrence);
     }
     if (bad) {
       el.querySelector('.err').hidden = false;

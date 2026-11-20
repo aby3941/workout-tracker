@@ -1,7 +1,7 @@
 // State-derived helpers shared by the screens. No rules live here: everything is a thin combination of the
 // logic modules (program.js decides plans and cycle positions, progression.js decides suggestions).
 
-import { DAYS, DAY_ORDER, ROTATION, EXERCISES, MAIN_LIFTS, getDayPlan, daySlotKeys, cyclePosition, roleOf } from '../program.js';
+import { DAYS, DAY_ORDER, ROTATION, EXERCISES, MAIN_LIFTS, SLOTS, getDayPlan, daySlotKeys, cyclePosition, roleOf } from '../program.js';
 import { sortByDate } from '../dates.js';
 
 /** The plan options from the saved settings. */
@@ -89,20 +89,71 @@ export function roleName(exerciseId, name, role, rx) {
 }
 
 /**
- * The 5 main lifts and every current accessory pick (unique by exercise + role), program order.
+ * The superset partner of a plan item: the other exercise of a combo slot, else the item in the partner slot
+ * (so the second Lateral raise pairs with the second triceps slot even when both triceps picks are the same).
+ * @param {{items: Array<object>}} plan
+ * @param {object} item
+ * @returns {object|null}
+ */
+export function partnerOf(plan, item) {
+  if (!item || !item.supersetWith) return null;
+  const sameSlot = plan.items.filter((x) => x.slotKey === item.slotKey && x !== item);
+  if (sameSlot.length) return sameSlot.find((x) => x.exerciseId === item.supersetWith) || sameSlot[0];
+  const slotKey = SLOTS[item.slotKey] ? SLOTS[item.slotKey].supersetWith : null;
+  return plan.items.find((x) => x.slotKey === slotKey) || plan.items.find((x) => x.exerciseId === item.supersetWith && x !== item) || null;
+}
+
+/** "2nd", "3rd", "4th" … */
+export function ordinal(n) {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+  return `${n}${suffix}`;
+}
+
+/**
+ * Display name of a track whose exercise appears more than once in a workout (§17.1). The first keeps the plain
+ * name; a later one is named after its superset partner in the plan ("Lateral raise · with Overhead triceps
+ * extension"), or by position when it has none ("Lateral raise (2nd)").
+ * @param {string} name the exercise's display name
+ * @param {number} occurrence
+ * @param {string|null} [partnerName]
+ * @returns {string}
+ */
+export function trackName(name, occurrence, partnerName = null) {
+  if (!(occurrence > 0)) return name;
+  return partnerName ? `${name} · with ${partnerName}` : `${name} (${ordinal(occurrence + 1)})`;
+}
+
+/**
+ * `trackName` for a plan item (its partner taken from the plan).
+ * @param {{items: Array<object>}} plan
+ * @param {object} item a `getDayPlan` item
+ * @returns {string}
+ */
+export function planTrackName(plan, item) {
+  const partner = item.occurrence > 0 ? partnerOf(plan, item) : null;
+  return trackName(item.name, item.occurrence, partner ? partner.name : null);
+}
+
+/**
+ * The 5 main lifts and every current accessory track (unique by exercise + role + occurrence), program order.
  * @param {object} state
- * @returns {{mains: Array<{exerciseId: string, name: string, role: 'main'}>,
- *   accessories: Array<{exerciseId: string, name: string, role: 'accessory'}>}}
+ * @returns {{mains: Array<{exerciseId: string, name: string, role: 'main', occurrence: 0}>,
+ *   accessories: Array<{exerciseId: string, name: string, role: 'accessory', occurrence: number}>}}
  */
 export function weightTargets(state) {
-  const mains = MAIN_LIFTS.map((id) => ({ exerciseId: id, name: EXERCISES[id].name, role: 'main' }));
+  const mains = MAIN_LIFTS.map((id) => ({ exerciseId: id, name: EXERCISES[id].name, role: 'main', occurrence: 0 }));
   const seen = new Set();
   const accessories = [];
   for (const day of DAY_ORDER) {
-    for (const it of dayPlan(state, day).items) {
-      if (roleOf(day, it.exerciseId) !== 'accessory' || seen.has(it.exerciseId)) continue;
-      seen.add(it.exerciseId);
-      accessories.push({ exerciseId: it.exerciseId, name: roleName(it.exerciseId, it.name, 'accessory', it), role: 'accessory' });
+    const plan = dayPlan(state, day);
+    for (const it of plan.items) {
+      const key = `${it.exerciseId}|${it.occurrence}`;
+      if (roleOf(day, it.exerciseId) !== 'accessory' || seen.has(key)) continue;
+      seen.add(key);
+      accessories.push({
+        exerciseId: it.exerciseId, name: roleName(it.exerciseId, planTrackName(plan, it), 'accessory', it), role: 'accessory', occurrence: it.occurrence,
+      });
     }
   }
   return { mains, accessories };

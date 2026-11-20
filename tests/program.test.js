@@ -5,6 +5,7 @@ import {
   normalizeName, matchExercise, customId, isCustom, exerciseName, roleOf, mainSetsFor,
   getDayPlan, nextDay, cyclePosition, nextWorkout, parseDayText, resolveDay,
 } from '../public/js/program.js';
+import * as program from '../public/js/program.js';
 import { session, clone } from './_helpers.js';
 
 // ---------------------------------------------------------------- fixtures from the spec
@@ -864,5 +865,34 @@ describe('resolveDay', () => {
   test('no type and no known exercises → null', () => {
     assert.equal(resolveDay(null, null, []), null);
     assert.equal(resolveDay(null, null, ['custom:zercher squat']), null);
+  });
+});
+
+// ------------------------------------------------------------------ added by the independent review (Batch 1)
+
+describe('searchExercises (the Add exercise search, §17.5)', () => {
+  const { searchExercises } = program;
+
+  test('empty → every catalog id; a part of a name or alias → those ids, catalog order', () => {
+    assert.deepEqual(searchExercises(''), Object.keys(program.EXERCISES));
+    assert.deepEqual(searchExercises('skull'), ['skullcrusher']);
+    assert.deepEqual(searchExercises('Leg Press'), ['legPress', 'legPressCalfRaise']);
+  });
+
+  test('a plural finds the exercise, as matchExercise does ("face pulls" → Face pull), so the list never says "no match" for a name Enter would add', () => {
+    assert.deepEqual(searchExercises('face pulls'), ['facePull']);
+    assert.deepEqual(searchExercises('hammer curls'), ['hammerCurl']);
+    assert.deepEqual(searchExercises('lat raises'), ['lateralRaise']);
+  });
+
+  test('whatever matchExercise picks for a name, alias or plural is in the search results', () => {
+    for (const ex of Object.values(program.EXERCISES)) {
+      for (const n of [ex.name, ...ex.aliases]) {
+        for (const typed of [n, `${n}s`]) {
+          const id = program.matchExercise(typed);
+          if (id) assert.ok(searchExercises(typed).includes(id), `"${typed}" → ${id} should be listed; got ${JSON.stringify(searchExercises(typed))}`);
+        }
+      }
+    }
   });
 });

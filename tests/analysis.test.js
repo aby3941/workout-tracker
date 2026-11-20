@@ -50,9 +50,13 @@ describe('series', () => {
     ]);
   });
 
-  test('repeated entries in a session are combined into one point', () => {
+  // Changed for §17.1 (20/11/2026): repeated entries are separate tracks, no longer combined into one point.
+  test('repeated entries in a session are separate tracks: one point per occurrence (§17.1)', () => {
     assert.deepEqual(series(DATA, 'lateralRaise', 'accessory').map(view), [
-      { date: '2026-11-07', topWeight: 12.5, bestE1rm: 17.5, volume: 900 },
+      { date: '2026-11-07', topWeight: 10, bestE1rm: 15, volume: 450 },
+    ]);
+    assert.deepEqual(series(DATA, 'lateralRaise', 'accessory', 1).map(view), [
+      { date: '2026-11-07', topWeight: 12.5, bestE1rm: 17.5, volume: 450 },
     ]);
   });
 
@@ -78,9 +82,21 @@ describe('personalBests', () => {
     name: p.name, bestWeight: p.bestWeight, bestWeightDate: p.bestWeightDate, bestE1rm: p.bestE1rm, bestE1rmDate: p.bestE1rmDate,
   });
 
-  test('one per (exerciseId, role), with names and dates', () => {
+  // Changed for §17.1 (20/11/2026): one row per track (exerciseId, role, occurrence); the two lateral raises
+  // of 07/11 are two rows now (was one combined row: 4 rows in all).
+  test('one per track (exerciseId, role, occurrence), with names and dates (§17.1)', () => {
     const pbs = personalBests(DATA);
-    assert.equal(pbs.length, 4);
+    assert.equal(pbs.length, 5);
+    const lateral = pbs.filter((p) => p.exerciseId === 'lateralRaise' && p.role === 'accessory');
+    assert.deepEqual(lateral.map((p) => p.occurrence).sort(), [0, 1]);
+    const lr0 = lateral.find((p) => p.occurrence === 0);
+    const lr1 = lateral.find((p) => p.occurrence === 1);
+    assert.deepEqual(fields(lr0), {
+      name: 'Lateral raise', bestWeight: 10, bestWeightDate: '2026-11-07', bestE1rm: 15, bestE1rmDate: '2026-11-07',
+    });
+    // (occurrence > 0 display names come from the plan in the UI, so the name is not checked here)
+    assert.deepEqual([lr1.bestWeight, lr1.bestWeightDate, lr1.bestE1rm, lr1.bestE1rmDate], [12.5, '2026-11-07', 17.5, '2026-11-07']);
+    for (const p of pbs.filter((x) => x.exerciseId !== 'lateralRaise')) assert.equal(p.occurrence, 0, `${p.exerciseId}/${p.role}`);
     assert.deepEqual(fields(find(pbs, 'bench', 'main')), {
       name: 'Bench press', bestWeight: 62.5, bestWeightDate: '2026-11-07', bestE1rm: 76, bestE1rmDate: '2026-11-03',
     });
@@ -89,9 +105,6 @@ describe('personalBests', () => {
     });
     assert.deepEqual(fields(find(pbs, 'ohp', 'main')), {
       name: 'Overhead press', bestWeight: 40, bestWeightDate: '2026-11-05', bestE1rm: 46.7, bestE1rmDate: '2026-11-05',
-    });
-    assert.deepEqual(fields(find(pbs, 'lateralRaise', 'accessory')), {
-      name: 'Lateral raise', bestWeight: 12.5, bestWeightDate: '2026-11-07', bestE1rm: 17.5, bestE1rmDate: '2026-11-07',
     });
   });
 
@@ -231,19 +244,24 @@ describe('watchList', () => {
 });
 
 describe('exercisesInData', () => {
-  test('unique (exerciseId, role) with names', () => {
+  // Changed for §17.1 (20/11/2026): one row per track — the second lateral raise of 07/11 is its own row
+  // (occurrence 1); every row carries its occurrence. Names for occurrence > 0 come from the plan (UI), so
+  // only occurrence-0 names are checked here.
+  test('unique (exerciseId, role, occurrence) with names (§17.1)', () => {
     const data = [...DATA, session('2026-11-09', 'pushA', [
       entry('bench', rep(5, 65, 5)),
       entry('custom:cable y raise', W([5, 15]), 'Cable Y-raise'),
     ])];
-    const key = (x) => `${x.exerciseId}|${x.role}`;
-    const got = exercisesInData(data).map((x) => ({ exerciseId: x.exerciseId, name: x.name, role: x.role })).sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    const key = (x) => `${x.exerciseId}|${x.role}|${x.occurrence}`;
+    const got = exercisesInData(data).map((x) => ({ exerciseId: x.exerciseId, name: x.occurrence === 0 ? x.name : '(from the plan)', role: x.role, occurrence: x.occurrence }))
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1));
     assert.deepEqual(got, [
-      { exerciseId: 'bench', name: 'Bench press', role: 'accessory' },
-      { exerciseId: 'bench', name: 'Bench press', role: 'main' },
-      { exerciseId: 'custom:cable y raise', name: 'Cable Y-raise', role: 'accessory' },
-      { exerciseId: 'lateralRaise', name: 'Lateral raise', role: 'accessory' },
-      { exerciseId: 'ohp', name: 'Overhead press', role: 'main' },
+      { exerciseId: 'bench', name: 'Bench press', role: 'accessory', occurrence: 0 },
+      { exerciseId: 'bench', name: 'Bench press', role: 'main', occurrence: 0 },
+      { exerciseId: 'custom:cable y raise', name: 'Cable Y-raise', role: 'accessory', occurrence: 0 },
+      { exerciseId: 'lateralRaise', name: 'Lateral raise', role: 'accessory', occurrence: 0 },
+      { exerciseId: 'lateralRaise', name: '(from the plan)', role: 'accessory', occurrence: 1 },
+      { exerciseId: 'ohp', name: 'Overhead press', role: 'main', occurrence: 0 },
     ]);
   });
 

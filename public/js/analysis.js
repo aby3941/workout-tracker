@@ -2,7 +2,7 @@
 
 import { sortByDate, weekStart, addDays, compareISO, isValidISO } from './dates.js';
 import { MAIN_LIFTS, roleOf, exerciseName } from './program.js';
-import { entriesFor, maxWeight, suggestMain } from './progression.js';
+import { entriesFor, maxWeight, suggestMain, occurrencesOf } from './progression.js';
 import { roundTo, cleanNumber } from './units.js';
 
 /**
@@ -20,14 +20,15 @@ export function e1rm(weight, reps) {
 const volumeOf = (sets) => cleanNumber(sets.reduce((sum, s) => sum + (Number(s.weight) || 0) * (Number(s.reps) || 0), 0));
 
 /**
- * One point per session for an exercise in a role, oldest first.
+ * One point per session for one track (exercise, role, occurrence), oldest first.
  * @param {Array<object>} sessions
  * @param {string} exerciseId
  * @param {'main'|'accessory'} role
+ * @param {number} [occurrence]
  * @returns {Array<{date: string, topWeight: number, bestE1rm: number, volume: number, sets: Array, offDay: boolean}>}
  */
-export function series(sessions, exerciseId, role) {
-  return entriesFor(sessions, exerciseId, role).map((item) => ({
+export function series(sessions, exerciseId, role, occurrence = 0) {
+  return entriesFor(sessions, exerciseId, role, occurrence).map((item) => ({
     date: item.date,
     topWeight: maxWeight(item),
     bestE1rm: Math.max(...item.sets.map((s) => e1rm(s.weight, s.reps))),
@@ -38,32 +39,35 @@ export function series(sessions, exerciseId, role) {
 }
 
 /**
- * Unique (exerciseId, role) pairs in the data with display names, in order of first appearance.
+ * Unique tracks (exerciseId, role, occurrence) in the data, in order of first appearance. `name` is the catalog
+ * (or stored custom) name; screens name the second and later occurrences from the plan.
  * @param {Array<object>} sessions
- * @returns {Array<{exerciseId: string, name: string, role: 'main'|'accessory'}>}
+ * @returns {Array<{exerciseId: string, name: string, role: 'main'|'accessory', occurrence: number}>}
  */
 export function exercisesInData(sessions) {
   const seen = new Map();
   for (const s of sortByDate(sessions)) {
-    for (const e of s.entries || []) {
-      if (!e.sets || !e.sets.length) continue; // no sets = no data (entriesFor skips these too)
+    const entries = s.entries || [];
+    const occ = occurrencesOf(entries);
+    entries.forEach((e, i) => {
+      if (!e.sets || !e.sets.length) return; // no sets = no data (entriesFor skips these too)
       const role = roleOf(s.day, e.exerciseId);
-      const key = `${e.exerciseId}|${role}`;
-      if (!seen.has(key)) seen.set(key, { exerciseId: e.exerciseId, name: exerciseName(e.exerciseId, e.name), role });
-    }
+      const key = `${e.exerciseId}|${role}|${occ[i]}`;
+      if (!seen.has(key)) seen.set(key, { exerciseId: e.exerciseId, name: exerciseName(e.exerciseId, e.name), role, occurrence: occ[i] });
+    });
   }
   return [...seen.values()];
 }
 
 /**
- * Best weight and best e1RM per (exerciseId, role); the earliest date wins ties.
+ * Best weight and best e1RM per track (exerciseId, role, occurrence); the earliest date wins ties.
  * @param {Array<object>} sessions
- * @returns {Array<{exerciseId: string, name: string, role: string, bestWeight: number, bestWeightDate: string, bestE1rm: number, bestE1rmDate: string}>}
+ * @returns {Array<{exerciseId: string, name: string, role: string, occurrence: number, bestWeight: number, bestWeightDate: string, bestE1rm: number, bestE1rmDate: string}>}
  */
 export function personalBests(sessions) {
-  return exercisesInData(sessions).map(({ exerciseId, name, role }) => {
-    const pb = { exerciseId, name, role, bestWeight: -Infinity, bestWeightDate: null, bestE1rm: -Infinity, bestE1rmDate: null };
-    for (const p of series(sessions, exerciseId, role)) {
+  return exercisesInData(sessions).map(({ exerciseId, name, role, occurrence }) => {
+    const pb = { exerciseId, name, role, occurrence, bestWeight: -Infinity, bestWeightDate: null, bestE1rm: -Infinity, bestE1rmDate: null };
+    for (const p of series(sessions, exerciseId, role, occurrence)) {
       if (p.topWeight > pb.bestWeight) { pb.bestWeight = p.topWeight; pb.bestWeightDate = p.date; }
       if (p.bestE1rm > pb.bestE1rm) { pb.bestE1rm = p.bestE1rm; pb.bestE1rmDate = p.date; }
     }
@@ -117,17 +121,21 @@ export function summary(sessions, today) {
 }
 
 /**
- * Main lifts currently missing (fail streak ≥ 1) or due a deload.
+ * Main-lift tracks currently missing (fail streak ≥ 1) or due a deload, in `MAIN_LIFTS` order, then by occurrence
+ * (a main lift logged twice in one workout is two tracks).
  * @param {Array<object>} sessions
  * @param {'kg'|'lb'} unit
- * @returns {Array<{exerciseId: string, weight: number, failStreak: number, action: string}>}
+ * @param {Object<string, number>} [steps] the user's steps (deload rounding)
+ * @returns {Array<{exerciseId: string, occurrence: number, weight: number, failStreak: number, action: string}>}
  */
-export function watchList(sessions, unit) {
+export function watchList(sessions, unit, steps = {}) {
+  const tracks = exercisesInData(sessions).filter((t) => t.role === 'main' && MAIN_LIFTS.includes(t.exerciseId))
+    .sort((a, b) => MAIN_LIFTS.indexOf(a.exerciseId) - MAIN_LIFTS.indexOf(b.exerciseId) || a.occurrence - b.occurrence);
   const out = [];
-  for (const id of MAIN_LIFTS) {
-    const r = suggestMain(sessions, id, unit);
+  for (const { exerciseId, occurrence } of tracks) {
+    const r = suggestMain(sessions, exerciseId, unit, { occurrence, steps });
     if (r.action === 'start') continue;
-    if (r.failStreak >= 1 || r.action === 'deload') out.push({ exerciseId: id, weight: r.weight, failStreak: r.failStreak, action: r.action });
+    if (r.failStreak >= 1 || r.action === 'deload') out.push({ exerciseId, occurrence, weight: r.weight, failStreak: r.failStreak, action: r.action });
   }
   return out;
 }

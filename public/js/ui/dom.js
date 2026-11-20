@@ -99,24 +99,29 @@ function byWeight(sets) {
 
 /**
  * Compact sets: "100×5,5,5,5,7", "20×16 ×5" (4+ identical sets), "60×5 · 62.5×5,5" (weight changes).
+ * Timed exercises (plank: the reps are seconds) end each group with " s": "0×45,45,40 s".
  * @param {Array<{weight: number, reps: number}>} sets
+ * @param {boolean} [timed]
  * @returns {string}
  */
-export function setsShort(sets) {
+export function setsShort(sets, timed = false) {
+  const s = timed ? ' s' : '';
   return byWeight(sets).map((g) => {
     const same = g.reps.length > 3 && g.reps.every((r) => r === g.reps[0]);
-    return same ? `${formatNumber(g.weight)}×${g.reps[0]} ×${g.reps.length}` : `${formatNumber(g.weight)}×${g.reps.join(',')}`;
+    return same ? `${formatNumber(g.weight)}×${g.reps[0]}${s} ×${g.reps.length}` : `${formatNumber(g.weight)}×${g.reps.join(',')}${s}`;
   }).join(' · ');
 }
 
 /**
  * Readable sets with the unit: "92.5 kg × 5, 5, 6"; "60 kg × 5 · 62.5 kg × 5, 5" when the weight changes.
+ * Timed exercises end each group with " s": "0 kg × 45, 45, 40 s".
  * @param {Array<{weight: number, reps: number}>} sets
  * @param {'kg'|'lb'} unit
+ * @param {boolean} [timed]
  * @returns {string}
  */
-export function setsLong(sets, unit) {
-  return byWeight(sets).map((g) => `${formatWeight(g.weight, unit)} × ${g.reps.join(', ')}`).join(' · ');
+export function setsLong(sets, unit, timed = false) {
+  return byWeight(sets).map((g) => `${formatWeight(g.weight, unit)} × ${g.reps.join(', ')}${timed ? ' s' : ''}`).join(' · ');
 }
 
 /**

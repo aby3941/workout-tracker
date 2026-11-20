@@ -181,7 +181,7 @@ Applied by `getDayPlan` to accessory slots only (main lifts never change; abs ne
 
 Session shape (see §8): `{id, date, day, offDay, note, entries:[{exerciseId, name?, sets:[{weight, reps}]}]}`. Role is derived (`roleOf(session.day, entry.exerciseId)`), never stored. Functions must sort input themselves (by date asc, stable) and must not mutate it.
 
-- `entriesFor(sessions, exerciseId, role)` → `[{date, day, offDay, sets}]` ascending. Multiple entries of the same exercise+role in one session (e.g. Lateral raise in push.side1 and push.side2) are **combined** into one item with concatenated sets.
+- `entriesFor(sessions, exerciseId, role)` → `[{date, day, offDay, sets}]` ascending. ~~Multiple entries of the same exercise+role in one session are combined~~ — **replaced by §17.1 (20/11/2026): each occurrence is its own track.**
 - `isMainSuccess(item, plannedSets)` → true iff `item.sets.length >= plannedSets` AND each of the first `plannedSets` sets has `reps >= 5`.
 - `suggestMain(sessions, exerciseId, unit)` → `{weight, action, failStreak, last}`:
   - no history → `{weight: null, action: 'start', failStreak: 0, last: null}`.
@@ -263,7 +263,7 @@ Session shape (see §8): `{id, date, day, offDay, note, entries:[{exerciseId, na
 ## 9. Analysis (`analysis.js`)
 
 - `e1rm(weight, reps)` (Epley): reps ≤ 0 → 0; reps 1 → weight; else `weight × (1 + reps/30)`, rounded to 0.1.
-- `series(sessions, exerciseId, role)` → `[{date, topWeight, bestE1rm, volume}]` ascending (one per session; combined entries as in `entriesFor`). topWeight = max weight; bestE1rm = max e1rm over sets; volume = Σ weight×reps.
+- `series(sessions, exerciseId, role)` → `[{date, topWeight, bestE1rm, volume}]` ascending (one per session; per occurrence, see §17.1). topWeight = max weight; bestE1rm = max e1rm over sets; volume = Σ weight×reps.
 - `personalBests(sessions)` → `[{exerciseId, name, role, bestWeight, bestWeightDate, bestE1rm, bestE1rmDate}]` — one per (exerciseId, role); earliest date wins ties.
 - `weeklyVolume(sessions)` → `[{weekStart, volume, count}]` ascending, Monday weeks, **zero-filled gaps** between the first and last week.
 - `summary(sessions, today)` → `{total, thisMonth, last7, firstDate, lastDate}`; thisMonth = same calendar month and year as today; last7 = dates in `(today−7, today]`. Empty → zeros and nulls.
@@ -408,3 +408,47 @@ Example: squat 60 kg done → app plans 62.5. User sets 70. Next leg day Today p
 - `manifest.webmanifest`: colours from the design tokens (`#f9f9f7` light background / theme). Icons: dumbbell glyph, `--s1` blue background, white glyph; 180 (apple-touch, no transparency), 192, 512; generated locally (headless Chrome screenshot of an SVG), generator script in `tools/` (not deployed).
 - Persist: `navigator.storage?.persist?.()` once after the first save.
 - No network requests, no external assets, no inline event handler attributes, no `alert/confirm/prompt`.
+
+
+## 17. Batch 1 — owner feedback 20/11/2026 (approved: "the rest work the batch like that")
+
+### 17.1 Repeated exercises are separate tracks (fixes the lateral-raise bug)
+Bug: Push days have Lateral raise twice (push.side1 superset with pushdowns, push.side2 superset with extensions). The old rule combined both into one history, so both cards showed the same weight (the heavier one's) and the same advice — e.g. last time #1 8 kg × 15,15,14 and #2 6 kg × 20,20,20 → both said "Go lighter → 5.5 kg". Correct: #1 "Go lighter → 5.5 kg" (a set fell under 15 — the §5 rule, unchanged), #2 "Add 2.5 kg → 8.5 kg" (every set hit 20). *(This example originally said #1 should "Keep 8 kg"; that contradicted §5 and was corrected on 20/11/2026.)*
+- A **track** is (exerciseId, role, occurrence). `occurrence` = 0-based index among the session's entries with the same exerciseId and role, in saved order. Existing data needs no migration: Today saves entries in card order, so the first Lateral raise of a Push day is occurrence 0 (with pushdowns), the second is occurrence 1 (with extensions).
+- `getDayPlan` items gain `occurrence` (index among that day's accessory items with the same exerciseId; the main lift is its own role). Push A/B: push.side1 → 0, push.side2 → 1. Everything else → 0.
+- `progression.entriesFor(sessions, exerciseId, role, occurrence = 0)` returns, per session, only the entry at that occurrence (sessions without it are skipped). **Nothing is combined anywhere any more.** `suggestMain` / `suggestAccessory` / `suggestTimed` take `occurrence` (default 0).
+- `baselineKey(exerciseId, role, occurrence = 0)`: occurrence 0 keeps the existing `"id|role"` format (stored set weights keep working); occurrence n > 0 → `"id|role|n"`. `consumeBaselines` uses each saved entry's occurrence.
+- `analysis`: `series(sessions, id, role, occurrence = 0)`; `personalBests`, `exercisesInData`, `watchList` return one row per track and include `occurrence`. Display names for occurrence > 0 come from the plan (UI): "Lateral raise · with Triceps pushdown" / "· with Overhead triceps extension"; if the plan has no partner, "Lateral raise (2nd)".
+- Text/CSV import and export: unchanged (occurrence comes from order).
+
+### 17.2 Weight step per exercise (machines)
+Owner: "the weights for the machine don't progress normally — it's based on the machines".
+- Catalog entries gain `equipment`: `'barbell' | 'dumbbell' | 'machine' | 'cable' | 'bodyweight' | 'band'`. Machine/cable: latPulldown, cableRow, facePull, tricepsPushdown, cableCurl, legPress, legCurl, calfRaise, seatedCalfRaise, legPressCalfRaise. Barbell: deadlift, barbellRow, bench, ohp, squat, rdl, frontSquat, barbellCurl, ezCurl, skullcrusher, landminePress. Bodyweight: pullUp, chinUp, ghr, plank, abWheel, hangingLegRaise. Band: bandPullApart. Dumbbell: the rest (dbRow, hammerCurl, dbCurl, inclineCurl, concentrationCurl, preacherCurl, inclineDbPress, ohTricepsExt, lyingTricepsExt, dbTricepsExt, lateralRaise, frontRaise, rearDeltFly, chestSupportedRow, tbarRow). Custom exercises: `null` (free weights).
+- Default step: machine/cable **5 kg / 10 lb**; everything else unchanged (main lifts by category, other accessories 2.5 kg / 5 lb).
+- New top-level state `steps: { [exerciseId]: number }` (user's own step per exercise, any equipment incl. main lifts — e.g. a gym without 1.25 kg plates sets squat to 5 kg). `stepFor(exerciseId, role, unit, steps)` in units.js (the one rule): user step if valid (finite > 0) else the default above.
+- Every increase / decrease / deload rounding uses `stepFor` (deload floors to the step). `suggestMain` / `suggestAccessory` / `suggestTimed` take `steps` (default `{}`).
+- `defaultState().steps = {}`, `migrate` keeps valid entries, `convertAllWeights` converts steps (convertWeight rounding). Backup CSV does not include steps.
+
+### 17.3 Timed exercises (plank)
+Owner: "for plank and other time things store that and gradually increase when you hit 60 s three sets".
+- Catalog: `plank` has `timed: true` (the reps field is seconds; shown as "45 s").
+- `suggestTimed(sessions, id, slot, unit, { occurrence, steps })` → `{ weight, action, targetSeconds, last }`, hold goal **60 s**:
+  - no history → `start`, targetSeconds 30 ("Hold as long as you can with good form").
+  - every planned set ≥ 60 s → `increase`: weight + step (a plate on the back), targetSeconds 30 (start building again).
+  - otherwise → `keep`, targetSeconds = min(60, shortest hold last time + 5).
+  - off days don't count (same as accessories).
+- Abs slots: plank uses `suggestTimed`; the other abs exercises keep "Any reps".
+
+### 17.4 What "weight" means + plate helper
+Owner asked whether weights are the plates added or the total. They are the **total on the bar, bar included** (as in the post). Make it explicit:
+- New setting `settings.barWeight` (in the user's unit; default 20 kg / 45 lb; Data → Settings "Barbell weight" with kg/lb label; converted by `convertAllWeights`). `warmupSets` and anything using the bar take it as a parameter (`units.barWeight(unit)` stays as the default).
+- Barbell exercises (equipment `'barbell'`): the weight column header reads **"Total weight"**, and under the set rows a plate line for set 1's weight: `platesText(total, bar, unit)` (pure, units.js) → "= 20 kg bar + 21.25 kg each side"; equal to the bar → "Empty bar"; below the bar → "Lighter than the bar — use a lighter bar or dumbbells"; empty → no line. Plan's rules card adds: "Weights are the total on the bar, bar included."
+- Machines/cables: header "Weight (stack)"; dumbbells: "Weight (each)"; bodyweight: "Added weight" (0 = bodyweight).
+
+### 17.5 Add exercise and Swap on iPhone
+Owner: "I added an exercise, nothing happened" / "tried swapping hanging leg raises, not able to change". Desktop works; on iPhone the Add sheet auto-focuses its search box, the keyboard covers the list and the first tap only closes the keyboard; nothing shows where the new card went.
+- Add exercise sheet: **no autofocus**; the search box filters the list as you type; Enter/Go adds the single remaining match, or the typed name as a custom exercise; empty Enter does nothing.
+- After adding: the sheet closes, the new card is **open, scrolled into view (centre) and briefly highlighted** (~1.2 s outline), toast "Added <name>".
+- Swap sheet: tapping an option applies it and closes; the card shows the new name and a toast "Swapped to <name> — from now on"; Custom… Enter = Save.
+- Every option row in both sheets is a ≥ 48 px button that works on the **first tap**, even while the keyboard is open (no layout shift before the click lands).
+- Tests must use real touch input (mobile emulation with touch, `Input.dispatchTouchEvent`), not only `element.click()`.

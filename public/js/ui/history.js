@@ -1,6 +1,6 @@
 // History: every logged workout, newest first, grouped by month; expand, edit or delete.
 
-import { DAYS, exerciseName } from '../program.js';
+import { DAYS, exerciseName, isTimed } from '../program.js';
 import { sortByDate, formatDate, formatMonthYear, weekdayShort } from '../dates.js';
 import { deleteSession } from '../store.js';
 import { html, setHTML, icon, setsShort, setsLong } from './dom.js';
@@ -28,9 +28,9 @@ function card(s, pos, unit) {
       ${s.offDay ? html`<span class="tagoff">Off day</span>` : icon(open ? 'chevronUp' : 'chevronDown', 'chev')}
     </button>
     ${open
-      ? html`${entries.map((e) => html`<div class="hline"><span>${exerciseName(e.exerciseId, e.name)}</span><span>${setsLong(e.sets, unit)}</span></div>`)}
+      ? html`${entries.map((e) => html`<div class="hline"><span>${exerciseName(e.exerciseId, e.name)}</span><span>${setsLong(e.sets, unit, isTimed(e.exerciseId))}</span></div>`)}
         ${s.note ? html`<p class="sum note-line">Note: ${s.note}</p>` : ''}`
-      : html`<p class="sum">${entries.slice(0, SUMMARY_ENTRIES).map((e) => `${exerciseName(e.exerciseId, e.name)} ${setsShort(e.sets)}`).join(' · ')}${extra > 0 ? ` · +${extra} more` : ''}</p>`}
+      : html`<p class="sum">${entries.slice(0, SUMMARY_ENTRIES).map((e) => `${exerciseName(e.exerciseId, e.name)} ${setsShort(e.sets, isTimed(e.exerciseId))}`).join(' · ')}${extra > 0 ? ` · +${extra} more` : ''}</p>`}
     ${open ? html`<div class="hist-actions">
       <button type="button" class="btn" data-act="edit">Edit</button>
       <button type="button" class="btn danger" data-act="delete">Delete</button>

@@ -742,6 +742,56 @@ export async function openSession({ server, viewport = IPHONE, colorScheme = 'li
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
   }
 
+  // Touch input (an iPhone finger): touch emulation on (mobile metrics are already set), then a real
+  // touchStart/touchEnd pair; Chrome turns it into the tap gesture and the click, as on a phone.
+  let touchOn = false;
+  async function enableTouch() {
+    if (touchOn) return;
+    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    touchOn = true;
+    trail.push('touch emulation on');
+  }
+  async function touchTap(x, y) {
+    await enableTouch();
+    const point = { x, y, radiusX: 4, radiusY: 4, force: 1, id: 1 };
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+    await sleep(40);
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  }
+  /** What is on top at (x, y) — for "the tap landed on something else" messages. */
+  const hitDescription = (lib, x, y) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return '(nothing)';
+    const named = el.closest('[aria-label],button,[role],label,section,article') || el;
+    return `<${named.tagName.toLowerCase()}${named.className ? ` class="${String(named.className).slice(0, 40)}"` : ''}> "${lib.accName(named).slice(0, 50)}"`;
+  };
+
+  /**
+   * Locate, wait until its position is stable, then tap its centre with a real touch (no el.click()
+   * fallback: a tap that would land on something else fails, as it would on the phone).
+   */
+  async function tapQuery(q, what, timeout) {
+    await enableTouch();
+    const deadline = Date.now() + timeout;
+    let prev = null;
+    let target;
+    for (;;) {
+      target = await poll(locateOp, [q, true], { timeout: Math.max(200, deadline - Date.now()), what });
+      if (prev && Math.abs(prev.x - target.x) < 1 && Math.abs(prev.y - target.y) < 1) break;
+      if (Date.now() >= deadline) break;
+      prev = target;
+      await sleep(50);
+    }
+    if (!target.hit) {
+      const onTop = await evaluate(hitDescription, target.x, target.y);
+      throw new E2EError(`Cannot tap ${what}: its centre (${Math.round(target.x)}, ${Math.round(target.y)}) is covered by ${onTop}\n${await describe()}`);
+    }
+    await touchTap(target.x, target.y);
+    trail.push(`tap ${what}`);
+    await sleep(80);
+    return target;
+  }
+
   /** Locate, wait until its position is stable (animations), click at its centre (or el.click() if covered). */
   async function clickQuery(q, what, timeout) {
     const deadline = Date.now() + timeout;
@@ -969,6 +1019,18 @@ export async function openSession({ server, viewport = IPHONE, colorScheme = 'li
     },
     /** Click at a raw element centre that an in-page op returned ({x, y}). */
     mouseClick,
+    /** Turn on touch emulation for this page (call before goto() so the page loads as a touch device). */
+    enableTouch,
+    /**
+     * Tap a visible element by role (default button) and accessible name with real touch input
+     * (Input.dispatchTouchEvent touchStart/touchEnd at its centre). Fails if something covers it.
+     */
+    async tap(name, { role = 'button', within, index, timeout = DEFAULT_TIMEOUT } = {}) {
+      const q = { role, name: toMatcher(name), within: toWithin(within), index };
+      return tapQuery(q, `${role} named ${describeMatcher(name)}${describeWithin(within)}`, timeout);
+    },
+    /** Tap at a raw point with real touch input. */
+    touchTap,
 
     // ---- downloads ------------------------------------------------------------------------
     /** Files the page tried to download via <a download> (content captured in-page) plus real Chrome downloads. */

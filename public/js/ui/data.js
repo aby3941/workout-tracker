@@ -4,9 +4,9 @@
 import { toCSV } from '../csv.js';
 import { parseImport, formatText } from '../parser.js';
 import { mergeSessions, convertAllWeights, defaultState, sessionKey } from '../store.js';
-import { CONVERSION_STEP, formatWeight } from '../units.js';
+import { CONVERSION_STEP, formatWeight, formatNumber, parseWeightInput, isValidBarWeight, barWeight } from '../units.js';
 import { formatDate } from '../dates.js';
-import { exerciseName } from '../program.js';
+import { exerciseName, isTimed } from '../program.js';
 import { html, setHTML, icon, plural, ago, setsShort } from './dom.js';
 import { openSheet, confirmSheet, toast } from './sheets.js';
 import { historyPositions, dayName } from './model.js';
@@ -100,7 +100,7 @@ function previewMarkup(p) {
   const n = p.sessions.length;
   return html`<div class="preview" aria-live="polite">
     <p><b>${n ? `${plural(n, 'workout')} found` : 'No workouts found'}</b>${n ? html` · ${p.added} new, ${p.replaced} will replace existing` : ''}</p>
-    ${p.rows.map(({ s, pos }) => html`<p class="pv">${formatDate(s.date)} · Day ${pos} · ${dayName(s.day)}${s.offDay ? ' (off day)' : ''} — ${s.entries.map((e) => `${exerciseName(e.exerciseId, e.name)} ${setsShort(e.sets)}`).join(' · ')}</p>`)}
+    ${p.rows.map(({ s, pos }) => html`<p class="pv">${formatDate(s.date)} · Day ${pos} · ${dayName(s.day)}${s.offDay ? ' (off day)' : ''} — ${s.entries.map((e) => `${exerciseName(e.exerciseId, e.name)} ${setsShort(e.sets, isTimed(e.exerciseId))}`).join(' · ')}</p>`)}
     ${[...p.warnings].sort((a, b) => a.line - b.line).map((w) => html`<p class="warnline">${icon('warn')}<span><b>Line ${w.line}:</b> ${w.message}</span></p>`)}
     ${n ? html`<button type="button" class="save" data-act="import">Import ${plural(n, 'workout')}</button>` : ''}
   </div>`;
@@ -157,6 +157,12 @@ export function renderData(root, ctx) {
       <div class="setrow"><span>Units</span><div class="seg two" role="group" aria-label="Units">
         <button type="button" data-act="unit" data-unit="kg" aria-pressed="${unit === 'kg'}">kg</button>
         <button type="button" data-act="unit" data-unit="lb" aria-pressed="${unit === 'lb'}">lb</button></div></div>
+      <div class="setrow">
+        <label for="bar-weight"><span>Barbell weight</span><span class="muted sub">The empty bar. Weights are the total on the bar, bar included.</span></label>
+        <form class="input-unit sm" data-form="bar"><input id="bar-weight" class="text-input" inputmode="decimal" autocomplete="off" enterkeyhint="done"
+          aria-label="Barbell weight (${unit})" data-fk="bar-weight" value="${formatNumber(state.settings.barWeight)}" placeholder="${formatNumber(barWeight(unit))}"><span>${unit}</span></form>
+      </div>
+      <p class="err" data-err="bar" hidden>Enter the empty bar's weight, like ${formatNumber(barWeight(unit))}.</p>
       <div class="setrow"><span>Dates</span><span class="muted">DD/MM/YYYY (day first)</span></div>
     </div>
 
@@ -166,6 +172,21 @@ export function renderData(root, ctx) {
       <button type="button" class="btn danger" data-act="delete-all">Delete everything…</button>
     </div>
   </div>`);
+
+  // Barbell weight: saved on Enter / Go and when the box loses focus.
+  const barForm = root.querySelector('[data-form="bar"]');
+  const barInput = barForm.querySelector('input');
+  const saveBar = () => {
+    const w = parseWeightInput(barInput.value);
+    const ok = isValidBarWeight(w);
+    barInput.setAttribute('aria-invalid', String(!ok));
+    root.querySelector('[data-err="bar"]').hidden = ok;
+    if (!ok || w === ctx.state.settings.barWeight) return;
+    ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, barWeight: w } }, { render: false });
+    toast(`Barbell weight: ${formatWeight(w, ctx.state.settings.unit)}`);
+  };
+  barForm.addEventListener('submit', (e) => { e.preventDefault(); saveBar(); barInput.blur(); });
+  barInput.addEventListener('change', saveBar);
 
   const paste = root.querySelector('[data-input="paste"]');
   const fileInput = root.querySelector('[data-input="file"]');

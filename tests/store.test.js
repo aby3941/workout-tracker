@@ -19,13 +19,15 @@ function fakeStorage(initial = {}) {
   };
 }
 
+// Changed for §17.2 / §17.4 (20/11/2026): the state gains `steps: {}` and `settings.barWeight` (20 kg default).
 const DEFAULT = {
   version: 1,
-  settings: { unit: 'kg', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false },
+  settings: { unit: 'kg', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false, barWeight: 20 },
   choices: {},
   sessions: [],
   draft: null,
   baselines: {},
+  steps: {},
 };
 
 const S1 = session('2026-11-03', 'pullA', [entry('deadlift', sets([140, 7]))], { id: 'a' });
@@ -75,18 +77,20 @@ describe('load', () => {
     const storage = fakeStorage({ [STORAGE_KEY]: JSON.stringify({ sessions: [S1], settings: { unit: 'lb' } }) });
     assert.deepEqual(load(storage), {
       version: 1,
-      settings: { unit: 'lb', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false },
+      // §17.4 (20/11/2026): a missing bar weight defaults to the bar in the stored unit (45 lb here)
+      settings: { unit: 'lb', goal: 'standard', abs: false, lastBackupAt: null, setupDone: false, barWeight: 45 },
       choices: {},
       sessions: [S1],
       draft: null,
       baselines: {},
+      steps: {},
     });
   });
 
   test('existing settings and choices are kept', () => {
     const stored = { version: 1, settings: { goal: 'cut', abs: true }, choices: { 'pull.vertical': 'chin' } };
     const state = load(fakeStorage({ [STORAGE_KEY]: JSON.stringify(stored) }));
-    assert.deepEqual(state.settings, { unit: 'kg', goal: 'cut', abs: true, lastBackupAt: null, setupDone: false });
+    assert.deepEqual(state.settings, { unit: 'kg', goal: 'cut', abs: true, lastBackupAt: null, setupDone: false, barWeight: 20 }); // barWeight: §17.4
     assert.deepEqual(state.choices, { 'pull.vertical': 'chin' });
     assert.deepEqual(state.sessions, []);
     assert.equal(state.draft, null);
@@ -98,11 +102,12 @@ describe('save / load', () => {
     const storage = fakeStorage();
     const state = {
       version: 1,
-      settings: { unit: 'lb', goal: 'strength', abs: true, lastBackupAt: '2026-11-01', setupDone: true },
+      settings: { unit: 'lb', goal: 'strength', abs: true, lastBackupAt: '2026-11-01', setupDone: true, barWeight: 45 },
       choices: { 'pull.rear': 'combo', 'pull.vertical': 'custom:Assisted Pull-up' },
       sessions: [S1, S2],
       draft: { date: '2026-11-10', day: 'legs', entries: [] },
       baselines: { 'squat|main': { weight: 70, setOn: '2026-11-03' } },
+      steps: { latPulldown: 10 }, // §17.2 / §17.4 (20/11/2026): steps and barWeight are part of a full state
     };
     save(state, storage);
     assert.deepEqual(JSON.parse(storage.getItem(STORAGE_KEY)), state);
