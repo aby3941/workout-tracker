@@ -105,8 +105,41 @@ export function isTimed(exerciseId) {
 /** Target reps on every main-lift set (the last set is AMRAP, "5+"). */
 export const MAIN_REPS = 5;
 
-/** Rest guidance by role. */
-export const REST = Object.freeze({ main: '3–5 min', accessory: '1–3 min' });
+/** Rest between sets by role, in seconds (§18.1): the one source for the rest guidance and the rest timer. */
+export const REST_SECONDS = Object.freeze({
+  main: Object.freeze({ min: 180, max: 300 }),
+  accessory: Object.freeze({ min: 60, max: 180 }),
+});
+
+/** Rest guidance by role ("3–5 min" / "1–3 min"), derived from `REST_SECONDS`. */
+export const REST = Object.freeze(Object.fromEntries(Object.entries(REST_SECONDS)
+  .map(([role, { min, max }]) => [role, `${min / 60}–${max / 60} min`])));
+
+/**
+ * Where a rest stands (§18.1). The timer counts up; `target` = the role's minimum + `extraSeconds` (each "+30 s");
+ * `resting` below the target, `ready` from the target up to and including the maximum + `extraSeconds`, `over` after
+ * that. `progress` = elapsed / target, between 0 and 1. Unknown roles rest like accessories.
+ * @param {number} elapsedSeconds
+ * @param {'main'|'accessory'} role
+ * @param {number} [extraSeconds]
+ * @returns {{phase: 'resting'|'ready'|'over', target: number, max: number, progress: number}}
+ */
+export function restPhase(elapsedSeconds, role, extraSeconds = 0) {
+  const { min, max } = REST_SECONDS[role] || REST_SECONDS.accessory;
+  const extra = Number.isFinite(extraSeconds) && extraSeconds > 0 ? extraSeconds : 0;
+  const elapsed = Number.isFinite(elapsedSeconds) && elapsedSeconds > 0 ? elapsedSeconds : 0;
+  const target = min + extra;
+  const end = max + extra;
+  const phase = elapsed < target ? 'resting' : elapsed <= end ? 'ready' : 'over';
+  return { phase, target, max: end, progress: Math.min(1, elapsed / target) };
+}
+
+/**
+ * The longest workout that still counts as one sitting, in minutes (§18.3, review 20/11/2026). A start time further
+ * back belongs to an earlier sitting (a draft left overnight): Today stops counting "so far", Save records no finish,
+ * and the next reps typed into a workout dated today start the clock again.
+ */
+export const MAX_WORKOUT_MINUTES = 240;
 
 /** Consecutive misses at the same weight before a deload. */
 export const MISSES_BEFORE_DELOAD = 3;

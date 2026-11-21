@@ -1,9 +1,11 @@
-// Today: log the next workout, or edit an old one loaded from History.
-// The form lives in `state.draft` once the user changes anything (autosaved); until then it is rebuilt from the
-// plan on every render, so swaps, goal and abs changes flow straight in. Suggestions come from progression.js.
+// Today: log the next workout, or edit an old one loaded from History; once today's workout is saved, "Done for
+// today ✓" until midnight (§18.4). The form lives in `state.draft` once the user changes anything (autosaved); until
+// then it is rebuilt from the plan on every render, so swaps, goal and abs changes flow straight in. Suggestions come
+// from progression.js. The draft also holds the workout's start time (`startedAt`), the rest timer (`rest`, §18.1)
+// and the warm-up ticks (`warmup`, §18.2).
 
 import {
-  DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS, HOLD_GOAL_SECONDS,
+  DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS, HOLD_GOAL_SECONDS, MAX_WORKOUT_MINUTES,
   nextWorkout, cyclePosition, roleOf, mainPrescription, accessoryPrescription,
   matchExercise, searchExercises, customId, isCustom, exerciseName, isTimed, equipmentOf, hasPlateLine,
 } from '../program.js';
@@ -11,12 +13,18 @@ import {
   suggestMain, suggestAccessory, suggestTimed, applyBaseline, baselineKey, warmupSets, maxWeight, repsToGo, occurrencesOf,
 } from '../progression.js';
 import { formatWeight, formatNumber, parseWeightInput, stepFor, smallestIncrement, platesText } from '../units.js';
-import { formatDate, formatDateShort, weekdayShort, compareISO, isValidISO, daysBetween } from '../dates.js';
+import {
+  formatDate, formatDateShort, weekdayShort, compareISO, isValidISO, daysBetween, addDays, sortByDate,
+  nowLocal, isValidLocalTime, formatTime, localDate, minutesBetween, formatDuration,
+} from '../dates.js';
 import { mergeSessions, replaceSession, deleteSession, consumeBaselines, sessionKey } from '../store.js';
+import { bestsBySession } from '../analysis.js';
 import { html, setHTML, icon, plural, setsLong, focusKey, restoreFocus } from './dom.js';
 import { openSheet, confirmSheet, toast, keepFocusOnTap } from './sheets.js';
 import { openSwapSheet, openSetWeightSheet } from './pickers.js';
-import { dayPlan, dayName, partnerOf, trackName } from './model.js';
+import { dayPlan, dayName, partnerOf, trackName, historyPositions } from './model.js';
+import { restMarkup, restView, updateRest, usableRest, unlockSound, beep, REST_MORE_SECONDS } from './rest.js';
+import { doneMarkup, openSavedSheet } from './summary.js';
 
 /** Most sets per exercise (matches the import cap, so every logged workout survives a text backup). */
 const MAX_SETS = 20;
@@ -30,10 +38,52 @@ const SAVE_REPEAT_MS = 1500;
 const FLASH_MS = 1200;
 /** Weight column header by equipment (§17.4): weights are the total on the bar, the stack, one dumbbell, or added. */
 const WEIGHT_HEADS = { barbell: 'Total weight', machine: 'Weight (stack)', cable: 'Weight (stack)', dumbbell: 'Weight (each)', bodyweight: 'Added weight' };
+/** How often the rest timer, the "min so far" line and the midnight check update. */
+const TICK_MS = 1000;
+/**
+ * The rest timer's buttons ignore taps this soon after a commit made it appear: on a phone, tapping the next box
+ * commits the one you left, the timer slides in under it, and the same tap must not land on "Skip".
+ */
+const REST_TAP_GUARD_MS = 400;
+/** The ready beep / flash only when the rest became ready this recently (not when the app is reopened later). */
+const READY_FRESH_S = 5;
 
 // Screen memory that is not saved: which cards are open, the date editor, inputs holding unreadable text,
-// and when the last save happened.
-const ui = { formId: '', opened: new Set(), dateOpen: false, bad: new Set(), savedAt: 0 };
+// when the last save happened, the last committed reps box, when a commit last moved the rest timer, and the rest
+// phase last seen (so "ready" beeps once).
+const ui = {
+  formId: '', opened: new Set(), dateOpen: false, bad: new Set(), savedAt: 0,
+  committed: '', restMovedAt: 0, restSeen: { key: '', phase: '' },
+};
+/**
+ * One app-wide tick a second, started by the first draw of Today: it watches the rest timer on every tab (the "ready"
+ * beep and flash, §18.1) and runs the per-second update of the Today screen while that screen is on show.
+ */
+const beat = { ctx: null, timer: 0, screen: null };
+
+// A reps box is committed by leaving it, i.e. by tapping something else. Moving the rest timer at that moment would
+// shift the page under the finger and the tap would land elsewhere, so layout changes wait until the tap is over.
+const pointer = { down: false, waiting: [], bound: false };
+/** Release everything waiting for the tap, after its click has been handled. */
+function pointerUp() {
+  pointer.down = false;
+  const run = pointer.waiting.splice(0);
+  if (run.length) setTimeout(() => run.forEach((fn) => fn()), 0);
+}
+/** Watch taps (once, on the first draw of Today — a tap must be seen from its start). */
+function watchTaps() {
+  if (pointer.bound) return;
+  pointer.bound = true;
+  window.addEventListener('pointerdown', () => { pointer.down = true; }, true);
+  window.addEventListener('pointerup', pointerUp, true);
+  window.addEventListener('pointercancel', pointerUp, true);
+}
+/** Run `fn` once no tap is in progress (right after the current one, or on the next tick). */
+function afterTap(fn) {
+  if (!pointer.down) { setTimeout(fn, 0); return; }
+  pointer.waiting.push(fn);
+  setTimeout(() => { const i = pointer.waiting.indexOf(fn); if (i >= 0) { pointer.waiting.splice(i, 1); fn(); } }, 1000);
+}
 
 const blankSet = () => ({ weight: null, reps: null, touched: false });
 
@@ -76,7 +126,31 @@ function usableDraft(state, today) {
     if (!e.sets.length) e.sets.push(blankSet());
   });
   if (d.editingId && !state.sessions.some((s) => s.id === d.editingId)) d.editingId = null;
+  // Batch 2 fields (§18): a damaged start time, rest timer or warm-up list is dropped, never shown.
+  if (d.startedAt !== undefined && !isValidLocalTime(d.startedAt)) delete d.startedAt;
+  if (d.rest !== undefined && !(usableRest(d.rest) && d.entries.some((e) => e.uid === d.rest.uid))) delete d.rest;
+  if (d.warmup !== undefined && !(d.warmup && typeof d.warmup === 'object' && !Array.isArray(d.warmup))) delete d.warmup;
   return d;
+}
+
+/** True when a stored draft holds a started workout: reps typed into a new workout, or an edit of a saved one. */
+function draftInUse(state) {
+  const d = state.draft;
+  if (!d || !Array.isArray(d.entries)) return false;
+  if (d.editingId && state.sessions.some((s) => s.id === d.editingId)) return true;
+  return d.entries.some((e) => e && Array.isArray(e.sets) && e.sets.some((st) => st && st.reps > 0));
+}
+
+/**
+ * "Done for today ✓" (§18.4): a workout is saved with today's date and no new workout has been started — unless
+ * "Start it now instead" was pressed today (`settings.startNextOn`; any other date is ignored).
+ * @param {object} state
+ * @param {string} today
+ * @returns {boolean}
+ */
+function isDoneForToday(state, today) {
+  if (state.settings.startNextOn === today) return false;
+  return state.sessions.some((s) => s.date === today) && !draftInUse(state);
 }
 
 /**
@@ -210,7 +284,10 @@ function prefill(state, form, only = null) {
     for (const set of entry.sets) {
       if (set.touched) continue;
       const w = set !== lead && lead && lead.touched ? lead.weight : (s.weight ?? null);
-      if (set.weight !== w) { set.weight = w; changed = true; }
+      if (set.weight === w) continue;
+      if (set === lead) clearWarmupTicks(form, entry); // a new work weight is a new warm-up list (§18.2)
+      set.weight = w;
+      changed = true;
     }
   }
   return changed;
@@ -228,6 +305,27 @@ function cardsFor(state, form) {
 }
 
 const hasReps = (entry) => entry.sets.some((s) => s.reps > 0);
+
+/**
+ * The form's start time while it is still the same sitting — at most `MAX_WORKOUT_MINUTES` ago — else null. An older
+ * start (a draft left overnight) is not timed on: no "so far", no finish on Save, and new reps today restart the clock.
+ */
+function liveStart(form) {
+  if (!isValidLocalTime(form.startedAt)) return null;
+  const age = minutesBetween(form.startedAt, nowLocal());
+  return age >= 0 && age <= MAX_WORKOUT_MINUTES ? form.startedAt : null;
+}
+
+/** Forget an entry's warm-up ticks (its warm-up list changed). */
+function clearWarmupTicks(form, entry) {
+  if (form.warmup && form.warmup[entry.uid]) delete form.warmup[entry.uid];
+}
+
+/** The ticked warm-up rows of an entry (indices below `count`). */
+function warmupTicks(form, entry, count) {
+  const list = form.warmup && form.warmup[entry.uid];
+  return new Set(Array.isArray(list) ? list.filter((n) => Number.isInteger(n) && n >= 0 && n < count) : []);
+}
 
 /**
  * Opening rule: the main lift and the first exercise that still has an empty reps box are open; an exercise
@@ -309,8 +407,29 @@ function suggestionText(s, info, entry, unit, steps) {
   }
 }
 
-function warmupText(weight, unit, bar) {
-  return warmupSets(weight, unit, bar).map((s) => `${formatNumber(s.weight)}×${s.reps}`).join(' · ');
+/**
+ * The main lift's warm-up checklist (§18.2): one checkbox per `warmupSets` row ("Warm-up 20 × 10, empty bar"), with
+ * "N of M done". The ticks live in the draft and are never saved into the workout. Hidden when there is no ramp.
+ */
+function warmupMarkup(form, entry, unit, bar) {
+  const lead = entry.sets[0] ? entry.sets[0].weight : null;
+  const ramp = warmupSets(lead, unit, bar);
+  const ticks = warmupTicks(form, entry, ramp.length);
+  return html`<div class="warmlist" data-warm ${ramp.length ? '' : 'hidden'}>
+    <p class="wl-title"><span>Warm-up</span><span class="muted" data-warm-count>${ticks.size} of ${ramp.length} done</span></p>
+    ${ramp.map((w, i) => {
+      const sets = `${formatNumber(w.weight)} × ${w.reps}`;
+      const bareBar = i === 0; // warmupSets starts with the empty bar
+      return html`<label class="wl-item${ticks.has(i) ? ' done' : ''}"><input type="checkbox" data-warm-i="${i}"
+        aria-label="Warm-up ${sets}${bareBar ? ', empty bar' : ''}" ${ticks.has(i) ? 'checked' : ''}><span>${sets}</span>${bareBar ? html`<small>empty bar</small>` : ''}</label>`;
+    })}
+  </div>`;
+}
+
+/** The rest timer when it belongs under this set of this entry. */
+function restUnder(form, entry, i, role) {
+  const rest = usableRest(form.rest);
+  return rest && rest.uid === entry.uid && rest.set === i ? restMarkup(rest, role, Date.now()) : '';
 }
 
 // ---------------------------------------------------------------- markup
@@ -328,7 +447,7 @@ function setRow(c, set, i, unit) {
   else if (!seconds && info.rx && info.rx.repsMin != null) repsHint = rangeText(info.rx);
   const bad = (k) => (ui.bad.has(`${entry.uid}:${k}${i}`) ? 'true' : 'false');
   const weightText = set.weight == null ? '' : formatNumber(set.weight);
-  return html`<div class="set-row">
+  return html`<div class="set-row" data-row="${i}">
     <span class="n">${n}${amrap ? html`<small>AMRAP</small>` : ''}</span>
     <label class="field"><input class="w" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next"
       aria-label="Set ${n} weight" aria-invalid="${bad('w')}" data-kind="w" data-set="${i}" data-fk="${entry.uid}:w${i}"
@@ -340,7 +459,7 @@ function setRow(c, set, i, unit) {
   </div>`;
 }
 
-function cardMarkup(c, state) {
+function cardMarkup(c, state, form) {
   const { entry, info, s } = c;
   const unit = state.settings.unit;
   const bar = state.settings.barWeight;
@@ -355,7 +474,6 @@ function cardMarkup(c, state) {
     </section>`;
   }
   const lead = entry.sets[0] ? entry.sets[0].weight : null;
-  const warm = info.main ? warmupText(lead, unit, bar) : '';
   const plates = info.plates ? platesText(lead, bar, unit) : '';
   const seconds = info.timed;
   return html`<section class="card ex" aria-label="${entry.name}" data-uid="${entry.uid}">
@@ -370,10 +488,10 @@ function cardMarkup(c, state) {
       <div class="suggest-text"><b>${t.up ? icon('up') : ''}<span class="suggest-headline">${t.headline}</span></b>${t.detail ? html`<span>${t.detail}</span>` : ''}</div>
       <button type="button" class="link setw" data-act="setweight" data-fk="${entry.uid}:setw">Set weight</button>
     </div>
-    ${info.main ? html`<p class="warm" data-warm ${warm ? '' : 'hidden'}>Warm-up: <span>${warm}</span></p>` : ''}
+    ${info.main ? warmupMarkup(form, entry, unit, bar) : ''}
     <div class="sets">
       <div class="set-row head" aria-hidden="true"><span>Set</span><span>${WEIGHT_HEADS[info.equipment] || 'Weight'}</span><span></span><span>${seconds ? 'Seconds' : 'Reps'}</span></div>
-      ${entry.sets.map((set, i) => setRow(c, set, i, unit))}
+      ${entry.sets.map((set, i) => html`${setRow(c, set, i, unit)}${restUnder(form, entry, i, info.role)}`)}
     </div>
     ${info.plates ? html`<p class="plates" data-plates ${plates ? '' : 'hidden'}>${plates}</p>` : ''}
     ${info.equipment === 'bodyweight' ? html`<p class="hint">Added weight: 0 = bodyweight only.</p>` : ''}
@@ -387,24 +505,129 @@ function cardMarkup(c, state) {
 
 // ---------------------------------------------------------------- screen
 
+/** The backup reminder ("Last backup: … — Export now") when there are workouts and no backup in 7 days. */
+function backupBanner(state, today) {
+  const last = state.settings.lastBackupAt;
+  if (!state.sessions.length || (last && daysBetween(last, today) < BACKUP_DAYS)) return '';
+  return html`<div class="banner"><span>Last backup: ${last ? formatDate(last) : 'never'}</span>
+      <button type="button" class="link" data-act="export-now">Export now</button></div>`;
+}
+
+/** "Thu 05/11" */
+const shortDay = (iso) => `${weekdayShort(iso)} ${formatDateShort(iso)}`;
+
+/**
+ * The line under the heading (§18.3): once the workout is started "Started 18:42 · 23 min so far" ("Started 18:42"
+ * alone for a start from an earlier sitting, see `liveStart`); before that "Last workout: Tue 18/11 at 19:41" (the
+ * time it was saved), without a time for a workout logged before times existed, and nothing with no history.
+ * Nothing while editing a saved workout.
+ */
+function timelineMarkup(state, form) {
+  if (form.editingId) return '';
+  if (isValidLocalTime(form.startedAt)) {
+    if (!liveStart(form)) return html`Started <b>${formatTime(form.startedAt)}</b>`;
+    const soFar = formatDuration(minutesBetween(form.startedAt, nowLocal()));
+    return html`Started <b>${formatTime(form.startedAt)}</b> · ${soFar} so far`;
+  }
+  const sorted = sortByDate(state.sessions);
+  const last = sorted[sorted.length - 1];
+  if (!last) return '';
+  const done = isValidLocalTime(last.finishedAt) ? last.finishedAt : null;
+  if (!done) return html`Last workout: ${shortDay(last.date)}`;
+  if (localDate(done) === last.date) return html`Last workout: ${shortDay(last.date)} at ${formatTime(done)}`;
+  return html`Last workout: ${shortDay(last.date)}, saved ${shortDay(localDate(done))} at ${formatTime(done)}`;
+}
+
+/** The rest timer of the stored draft and the role it rests for, or null. */
+function draftRest(state) {
+  const d = state.draft;
+  const rest = d && Array.isArray(d.entries) ? usableRest(d.rest) : null;
+  const entry = rest && d.entries.find((e) => e && e.uid === rest.uid);
+  return entry ? { rest, role: roleOf(d.day, entry.exerciseId) } : null;
+}
+
+/**
+ * The rest became ready just now (seen resting on the previous tick): one beep if the sound is on, and the card
+ * flashes once if it is on screen. A rest that was already up when the app was opened again stays quiet.
+ */
+function watchRest(ctx) {
+  const found = draftRest(ctx.state);
+  if (!found) { ui.restSeen = { key: '', phase: '' }; return; }
+  const { rest, role } = found;
+  const v = restView(rest, role, Date.now());
+  const key = `${rest.uid}:${rest.set}:${rest.startedAt}`;
+  if (ui.restSeen.key === key && ui.restSeen.phase === 'resting' && v.phase === 'ready' && v.elapsed - v.target < READY_FRESH_S) {
+    if (ctx.state.settings.restSound !== false) beep();
+    const sec = document.querySelector(`#view section[data-uid="${CSS.escape(rest.uid)}"]`);
+    if (sec) { sec.classList.add('flash'); setTimeout(() => sec.classList.remove('flash'), FLASH_MS); }
+  }
+  ui.restSeen = { key, phase: v.phase };
+}
+
+/** Start the app-wide tick (once) and make `onTick` the Today screen's per-second update while `root` is on show. */
+function tickWhileShown(ctx, root, onTick) {
+  beat.ctx = ctx;
+  beat.screen = { root, onTick };
+  if (beat.timer) return;
+  beat.timer = setInterval(() => {
+    watchRest(beat.ctx);
+    const screen = beat.screen;
+    if (screen && screen.root.isConnected) screen.onTick();
+  }, TICK_MS);
+}
+
+/**
+ * "Done for today ✓" (§18.4): today's workouts (times, exercises, new bests, Edit) and "Up next", whose button starts
+ * the next workout now (a double day). Redraws at midnight, when the next workout takes over.
+ */
+function renderDone(root, ctx, today) {
+  const state = ctx.state;
+  const unit = state.settings.unit;
+  const positions = historyPositions(state.sessions);
+  const bests = bestsBySession(state.sessions);
+  const cards = state.sessions.filter((s) => s.date === today).map((s) => ({ s, pos: positions.get(s.id), bests: bests.get(s.id) || [] }));
+  const next = nextWorkout(state.sessions);
+  // The next workout as it will open tomorrow: its main lift with the suggested weight, then the other exercises.
+  const preview = freshForm(state, { date: addDays(today, 1), day: next.dayId });
+  const names = preview.entries.map((e, i) => {
+    const w = i === 0 && e.sets[0] ? e.sets[0].weight : null;
+    return w == null ? e.name : `${e.name} ${formatWeight(w, unit)}`;
+  });
+  setHTML(root, doneMarkup({
+    today, unit, banner: backupBanner(state, today), cards, next: { position: next.position, dayId: next.dayId, line: names.join(' · ') },
+  }));
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'start-next') {
+      ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, startNextOn: today } }, { keepScroll: false });
+    } else if (b.dataset.act === 'edit-done') {
+      editSession(ctx, b.dataset.id);
+    } else if (b.dataset.act === 'export-now') {
+      ctx.go('data');
+    }
+  });
+  tickWhileShown(ctx, root, () => { if (ctx.today() !== today) ctx.render({ keepScroll: false }); });
+}
+
 /**
  * Draw the Today screen into `root` (a fresh element per render).
  * @param {HTMLElement} root
  * @param {object} ctx app context
  */
 export function renderToday(root, ctx) {
+  watchTaps();
+  const today = ctx.today();
+  if (isDoneForToday(ctx.state, today)) { renderDone(root, ctx, today); return; }
   const state = ctx.state;
   const unit = state.settings.unit;
   const form = currentForm(ctx);
   const formId = `${form.editingId || 'new'}|${form.date}|${form.day}`;
-  if (formId !== ui.formId) { ui.formId = formId; ui.opened = new Set(); ui.bad.clear(); }
+  if (formId !== ui.formId) { ui.formId = formId; ui.opened = new Set(); ui.bad.clear(); ui.committed = ''; }
   let cards = cardsFor(state, form);
   updateOpen(cards);
-
-  const today = ctx.today();
-  const last = state.settings.lastBackupAt;
-  const needsBackup = state.sessions.length > 0 && (!last || daysBetween(last, today) >= BACKUP_DAYS);
   const editing = Boolean(form.editingId);
+  const timeline = timelineMarkup(state, form);
 
   setHTML(root, html`<div class="screen today">
     <header class="today-head">
@@ -415,16 +638,16 @@ export function renderToday(root, ctx) {
         <input id="workout-date" class="text-input date-input" type="date" value="${form.date}" data-input="date">
       </div>
       <h1 class="big">Day ${positionOf(state, form)} of 6 · ${dayName(form.day)}</h1>
+      <p class="timeline" data-timeline ${timeline ? '' : 'hidden'}>${timeline}</p>
       <div class="picker" data-act="pick-day"><span>Doing a different workout?</span>
         <button type="button" class="link" data-act="pick-day" data-fk="pick-day" aria-haspopup="dialog">Change<span aria-hidden="true"> ▾</span></button></div>
     </header>
     ${editing ? html`<div class="banner edit"><span>Editing ${formatDate(form.date)} · ${dayName(form.day)}</span>
       <button type="button" class="link" data-act="cancel-edit">Cancel edit</button></div>` : ''}
-    ${needsBackup ? html`<div class="banner"><span>Last backup: ${last ? formatDate(last) : 'never'}</span>
-      <button type="button" class="link" data-act="export-now">Export now</button></div>` : ''}
+    ${backupBanner(state, today)}
     <label class="toggle-row"><span><b>Off day</b><span class="muted">Bad sleep or food — misses won't count</span></span>
       <input type="checkbox" class="switch" role="switch" aria-label="Off day" data-input="offday" ${form.offDay ? 'checked' : ''}></label>
-    <div class="cards">${cards.map((c) => cardMarkup(c, state))}</div>
+    <div class="cards">${cards.map((c) => cardMarkup(c, state, form))}</div>
     <button type="button" class="add" data-act="add-ex" data-fk="add-ex">+ Add exercise</button>
     <label class="note-field"><span>Note</span>
       <textarea rows="2" aria-label="Note" data-input="note" placeholder="Optional — e.g. slept badly">${form.note || ''}</textarea></label>
@@ -451,7 +674,7 @@ export function renderToday(root, ctx) {
     cards = cardsFor(ctx.state, form);
     const c = cards.find((x) => x.entry === entry);
     const tpl = document.createElement('template');
-    setHTML(tpl, cardMarkup(c, ctx.state));
+    setHTML(tpl, cardMarkup(c, ctx.state, form));
     sec.replaceWith(tpl.content);
     restoreFocus(root, key);
   };
@@ -460,6 +683,60 @@ export function renderToday(root, ctx) {
     const before = new Set(ui.opened);
     updateOpen(cardsFor(ctx.state, form));
     for (const e of form.entries) if (ui.opened.has(e.uid) && !before.has(e.uid)) redrawCard(e);
+  };
+  /** The line under the heading, brought up to date. */
+  const updateTimeline = () => {
+    const el = root.querySelector('[data-timeline]');
+    if (!el) return;
+    const markup = timelineMarkup(ctx.state, form);
+    el.hidden = !markup;
+    setHTML(el, markup);
+  };
+
+  // ------------------------------------------------ rest timer (§18.1)
+
+  const restRole = (rest) => {
+    const entry = form.entries.find((x) => x.uid === rest.uid);
+    return entry ? roleOf(form.day, entry.exerciseId) : 'accessory';
+  };
+  /** Draw the timer under its set (removing it from wherever it was). */
+  const placeRest = () => {
+    for (const old of root.querySelectorAll('[data-rest]')) old.remove();
+    const rest = usableRest(form.rest);
+    if (!rest) return;
+    const row = root.querySelector(`section[data-uid="${CSS.escape(rest.uid)}"] .set-row[data-row="${rest.set}"]`);
+    if (!row) return;
+    const tpl = document.createElement('template');
+    setHTML(tpl, restMarkup(rest, restRole(rest), Date.now()));
+    row.after(tpl.content);
+  };
+  /** Bring the drawn timer's clock, bar and phase up to date. */
+  const tickRest = () => {
+    const rest = usableRest(form.rest);
+    const el = root.querySelector('[data-rest]');
+    if (rest && el) updateRest(el, rest, restRole(rest), Date.now());
+  };
+  /**
+   * A reps box was committed (change / Enter / leaving it): with a valid number the timer (re)starts under that set.
+   * Committing the same value twice (Enter, then leaving the box) keeps the running timer.
+   */
+  const commitReps = (input) => {
+    const hit = cardOf(input);
+    if (!hit) return;
+    openMore();
+    if (form.editingId) return; // correcting a saved workout from History: nobody is resting
+    const i = Number(input.dataset.set);
+    const set = hit.entry.sets[i];
+    if (!set || !(set.reps > 0)) return;
+    const mark = `${hit.entry.uid}:${i}:${set.reps}`;
+    const rest = usableRest(form.rest);
+    if (ui.committed === mark && rest && rest.uid === hit.entry.uid && rest.set === i) return;
+    ui.committed = mark;
+    ui.restMovedAt = Date.now();
+    form.rest = { uid: hit.entry.uid, set: i, startedAt: Date.now(), extra: 0 };
+    if (ctx.state.settings.restSound !== false) unlockSound();
+    changed();
+    afterTap(() => { if (root.isConnected) { placeRest(); tickRest(); } });
   };
 
   root.addEventListener('input', (e) => {
@@ -472,6 +749,7 @@ export function renderToday(root, ctx) {
     const set = hit.entry.sets[i];
     const text = t.value.trim();
     if (kind === 'w') {
+      const before = set.weight;
       const w = parseWeightInput(text);
       const bad = text !== '' && w == null;
       t.setAttribute('aria-invalid', String(bad));
@@ -490,10 +768,12 @@ export function renderToday(root, ctx) {
           }
         });
         const warm = hit.sec.querySelector('[data-warm]');
-        if (warm) {
-          const textNow = warmupText(set.weight, unit, ctx.state.settings.barWeight);
-          warm.hidden = !textNow;
-          warm.querySelector('span').textContent = textNow;
+        const bar = ctx.state.settings.barWeight;
+        if (warm && JSON.stringify(warmupSets(before, unit, bar)) !== JSON.stringify(warmupSets(set.weight, unit, bar))) {
+          clearWarmupTicks(form, hit.entry); // a new work weight is a new warm-up list (§18.2)
+          const tpl = document.createElement('template');
+          setHTML(tpl, warmupMarkup(form, hit.entry, unit, bar));
+          warm.replaceWith(tpl.content);
         }
         const plates = hit.sec.querySelector('[data-plates]');
         if (plates) {
@@ -507,7 +787,13 @@ export function renderToday(root, ctx) {
       const bad = text !== '' && reps == null;
       t.setAttribute('aria-invalid', String(bad));
       ui.bad[bad ? 'add' : 'delete'](`${hit.entry.uid}:r${i}`);
+      // The workout starts with its first reps (§18.3), for a new workout logged on its own date (a workout typed in
+      // later for another day gets no clock times — they would say when it was typed, not when it was done). Reps typed
+      // into one with no start time yet (a draft from before the update, a date changed back to today) or with a start
+      // from an earlier sitting (`liveStart`) start the clock now.
+      const first = reps > 0 && !form.editingId && form.date === ctx.today() && !liveStart(form);
       set.reps = reps;
+      if (first) { form.startedAt = nowLocal(); updateTimeline(); }
       t.closest('.field').classList.toggle('done', reps > 0);
       if (t.classList.contains('fit')) t.style.setProperty('--len', String(fitLen(t.value || t.placeholder)));
     }
@@ -521,13 +807,30 @@ export function renderToday(root, ctx) {
       if (!isValidISO(t.value) || t.value === form.date) return;
       form.date = t.value;
       form.dateChosen = true;
+      if (!form.editingId) delete form.startedAt; // a start time belongs to the date it was typed on
       ui.dateOpen = false;
       prefill(ctx.state, form);
       changed();
       ctx.render();
       return;
     }
-    if (t.dataset.kind === 'r') openMore();
+    if (t.dataset.kind === 'r') { commitReps(t); return; }
+    if (t.dataset.warmI != null) {
+      const hit = cardOf(t);
+      if (!hit) return;
+      const ticks = warmupTicks(form, hit.entry, Infinity);
+      if (t.checked) ticks.add(Number(t.dataset.warmI)); else ticks.delete(Number(t.dataset.warmI));
+      form.warmup = { ...(form.warmup || {}), [hit.entry.uid]: [...ticks].sort((a, b) => a - b) };
+      t.closest('.wl-item').classList.toggle('done', t.checked);
+      const count = hit.sec.querySelector('[data-warm-count]');
+      if (count) count.textContent = `${hit.sec.querySelectorAll('[data-warm-i]:checked').length} of ${hit.sec.querySelectorAll('[data-warm-i]').length} done`;
+      changed();
+    }
+  });
+
+  // Enter commits a reps box too (a lone text box gets no "change" on Enter).
+  root.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.dataset && e.target.dataset.kind === 'r') commitReps(e.target);
   });
 
   root.addEventListener('click', (e) => {
@@ -587,6 +890,8 @@ export function renderToday(root, ctx) {
       case 'remove-set':
         if (hit && hit.entry.sets.length > 1) {
           hit.entry.sets.pop();
+          // The rest timer of the removed set goes with it (it would stay hidden and still beep).
+          if (form.rest && form.rest.uid === hit.entry.uid && form.rest.set >= hit.entry.sets.length) delete form.rest;
           changed();
           redrawCard(hit.entry);
         }
@@ -600,8 +905,30 @@ export function renderToday(root, ctx) {
         break;
       case 'add-ex': openAddExercise(ctx, form, changed); break;
       case 'save': saveWorkout(ctx, form); break;
+      case 'rest-more':
+        if (form.rest && Date.now() - ui.restMovedAt >= REST_TAP_GUARD_MS) {
+          form.rest = { ...form.rest, extra: (form.rest.extra || 0) + REST_MORE_SECONDS };
+          changed();
+          tickRest();
+        }
+        break;
+      case 'rest-skip':
+        if (Date.now() - ui.restMovedAt >= REST_TAP_GUARD_MS) {
+          delete form.rest;
+          changed();
+          placeRest();
+        }
+        break;
       default: break;
     }
+  });
+
+  let minute = nowLocal();
+  tickWhileShown(ctx, root, () => {
+    // After midnight an untouched form belongs to the new day (and "Done for today" may be over).
+    if (ctx.today() !== today && !ctx.state.draft) { ctx.render(); return; }
+    tickRest();
+    if (nowLocal() !== minute) { minute = nowLocal(); updateTimeline(); } // "N min so far"
   });
 }
 
@@ -749,15 +1076,43 @@ function openAddExercise(ctx, form, changed) {
 
 // ---------------------------------------------------------------- save / edit
 
-/** The session a form saves: only sets with reps > 0, no empty entries. */
-function sessionFrom(form) {
+/**
+ * The session a form saves: only sets with reps > 0, no empty entries. Times (§18.3): a new workout keeps the time of
+ * its first reps and finishes now — if it was started, or is saved, on its own date (one typed in later for another
+ * day gets none). A start from an earlier sitting (`liveStart`: a draft left overnight) is kept without a finish: the
+ * save time is not when that workout ended. An edited one keeps the times it had. Warm-up ticks and the rest timer
+ * stay behind.
+ */
+function sessionFrom(form, today) {
   const entries = [];
   for (const e of form.entries) {
     const sets = e.sets.filter((s) => s.reps > 0).map((s) => ({ weight: s.weight ?? 0, reps: s.reps }));
     if (!sets.length) continue;
     entries.push(isCustom(e.exerciseId) ? { exerciseId: e.exerciseId, name: e.name, sets } : { exerciseId: e.exerciseId, sets });
   }
-  return { date: form.date, day: form.day, offDay: Boolean(form.offDay), note: String(form.note || '').trim(), entries };
+  const session = { date: form.date, day: form.day, offDay: Boolean(form.offDay), note: String(form.note || '').trim(), entries };
+  if (isValidLocalTime(form.startedAt)) session.startedAt = form.startedAt;
+  if (form.editingId) {
+    if (isValidLocalTime(form.finishedAt)) session.finishedAt = form.finishedAt;
+  } else if (session.startedAt ? liveStart(form) : form.date === today) {
+    session.finishedAt = nowLocal();
+  }
+  return session;
+}
+
+/** After saving a new workout: the "Workout saved" sheet with its new bests and what comes next (§18.5). */
+function showSaved(ctx, session) {
+  const state = ctx.state;
+  const saved = state.sessions.find((s) => sessionKey(s) === sessionKey(session));
+  if (!saved) return;
+  const next = nextWorkout(state.sessions);
+  openSavedSheet({
+    session: saved,
+    bests: bestsBySession(state.sessions).get(saved.id) || [],
+    unit: state.settings.unit,
+    next: { position: next.position, dayId: next.dayId },
+    fromTomorrow: saved.date === ctx.today(),
+  });
 }
 
 async function saveWorkout(ctx, form) {
@@ -768,7 +1123,7 @@ async function saveWorkout(ctx, form) {
     if (el) el.focus();
     return;
   }
-  const session = sessionFrom(form);
+  const session = sessionFrom(form, ctx.today());
   if (!session.entries.length) {
     if (Date.now() - ui.savedAt < SAVE_REPEAT_MS) return;
     toast('Nothing to save yet — type the reps you did');
@@ -789,12 +1144,21 @@ async function saveWorkout(ctx, form) {
     ? replaceSession(ctx.state.sessions, form.editingId, session)
     : mergeSessions(others, [session]).sessions;
   let next = { ...ctx.state, sessions, draft: null };
-  if (!form.editingId) next = consumeBaselines(next, session);
+  if (!form.editingId) {
+    next = consumeBaselines(next, session);
+    // A double day (§18.4) ends with its save: Today shows "Done for today ✓" with both workouts again.
+    if ('startNextOn' in next.settings) {
+      const settings = { ...next.settings };
+      delete settings.startNextOn;
+      next = { ...next, settings };
+    }
+  }
   ui.formId = '';
   ui.savedAt = Date.now();
   ctx.commit(next, { keepScroll: false });
   ctx.afterSave();
   toast(`Saved ${dayName(session.day)} · ${formatDate(session.date)}`);
+  if (!form.editingId) showSaved(ctx, session);
 }
 
 /**
@@ -835,6 +1199,7 @@ export async function editSession(ctx, id) {
     return { uid: `x${extras}`, slotKey: null, exerciseId: e.exerciseId, name, sets };
   });
   const form = { date: s.date, day: s.day, offDay: Boolean(s.offDay), note: s.note || '', editingId: s.id, extraCount: extras, entries };
+  for (const k of ['startedAt', 'finishedAt']) if (isValidLocalTime(s[k])) form[k] = s[k]; // an edit keeps its times
   ctx.setState({ ...state, draft: form });
   ctx.saveNow();
   ctx.go('today');

@@ -140,13 +140,16 @@ export function formatNumber(w) {
 }
 
 /**
- * Weight with its unit: "62.5 kg", "100 kg", "135 lb".
+ * Weight with its unit: "62.5 kg", "100 kg", "135 lb". `grouped` adds thousands separators for big totals
+ * ("6,380 kg" lifted in a workout).
  * @param {number} w
  * @param {'kg'|'lb'} unit
+ * @param {{grouped?: boolean}} [opts]
  * @returns {string}
  */
-export function formatWeight(w, unit) {
-  return `${formatNumber(w)} ${unit}`;
+export function formatWeight(w, unit, { grouped = false } = {}) {
+  const n = formatNumber(w);
+  return `${grouped ? n.replace(/^\d+/, (int) => int.replace(/\B(?=(\d{3})+$)/g, ',')) : n} ${unit}`;
 }
 
 /**

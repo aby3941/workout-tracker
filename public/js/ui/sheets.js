@@ -68,19 +68,20 @@ export function keepFocusOnTap(container) {
 }
 
 /**
- * Open a sheet. `body` is a template result; the title becomes the dialog's accessible name.
- * `onCancel(close)` runs on Escape / backdrop (default: just close).
- * @param {{title: string, body: object, onCancel?: (close: () => void) => void, className?: string}} opts
+ * Open a sheet. `body` is a template result; the title becomes the dialog's accessible name (and its visible
+ * heading, unless `showTitle` is false because the body has its own). `onCancel(close)` runs on Escape / backdrop
+ * (default: just close).
+ * @param {{title: string, body: object, onCancel?: (close: () => void) => void, className?: string, showTitle?: boolean}} opts
  * @returns {{el: HTMLElement, close: () => void}}
  */
-export function openSheet({ title, body, onCancel, className = '' }) {
+export function openSheet({ title, body, onCancel, className = '', showTitle = true }) {
   bindKeys();
   const layer = document.createElement('div');
   layer.className = 'sheet-layer';
   setHTML(layer, html`<div class="backdrop"></div>
     <div class="sheet ${className}" role="dialog" aria-modal="true" aria-label="${title}" tabindex="-1">
       <div class="grab" aria-hidden="true"></div>
-      <h2 class="sheet-title">${title}</h2>
+      ${showTitle ? html`<h2 class="sheet-title">${title}</h2>` : ''}
       ${body}
     </div>`);
   document.body.append(layer);

@@ -1,4 +1,5 @@
-// Calendar-date helpers. Dates are ISO 'YYYY-MM-DD' strings for the LOCAL calendar day.
+// Calendar-date and wall-clock helpers. Dates are ISO 'YYYY-MM-DD' strings for the LOCAL calendar day; workout
+// times are local 'YYYY-MM-DDTHH:MM' strings (§18.3).
 // Never uses toISOString(); all arithmetic goes through local noon so DST cannot shift a day.
 
 const pad = (n, width = 2) => String(n).padStart(width, '0');
@@ -178,6 +179,119 @@ export function sortByDate(items) {
 export function dayIndex(iso) {
   const [y, m, d] = parts(iso);
   return Math.round(Date.UTC(y, m - 1, d) / 86400000);
+}
+
+// ---------------------------------------------------------------- wall-clock times (§18.3)
+// Workout times are local wall-clock strings "YYYY-MM-DDTHH:MM" — no time zone, like the dates.
+
+const RE_LOCAL_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/;
+
+/**
+ * True for a well-formed local time "YYYY-MM-DDTHH:MM" on a real date, 00:00–23:59.
+ * @param {unknown} local
+ * @returns {boolean}
+ */
+export function isValidLocalTime(local) {
+  if (typeof local !== 'string') return false;
+  const m = RE_LOCAL_TIME.exec(local);
+  return Boolean(m) && isValidISO(m[1]) && Number(m[2]) < 24 && Number(m[3]) < 60;
+}
+
+/**
+ * The local time now as "YYYY-MM-DDTHH:MM" (seconds dropped; local getters, never UTC).
+ * @param {Date} [now]
+ * @returns {string}
+ */
+export function nowLocal(now = new Date()) {
+  return `${fromLocalDate(now)}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
+
+/**
+ * Clock time "18:42" of a local time string.
+ * @param {string} local "YYYY-MM-DDTHH:MM"
+ * @returns {string}
+ */
+export function formatTime(local) {
+  return String(local).slice(11, 16);
+}
+
+/**
+ * Calendar date "YYYY-MM-DD" of a local time string.
+ * @param {string} local "YYYY-MM-DDTHH:MM"
+ * @returns {string}
+ */
+export function localDate(local) {
+  return String(local).slice(0, 10);
+}
+
+/** Minutes on the wall clock since 1970 (UTC arithmetic on the local parts, so DST can't move them). */
+function wallMinutes(local) {
+  const [date, time = '00:00'] = String(local).split('T');
+  const [y, m, d] = parts(date);
+  const [h, mi] = time.split(':').map(Number);
+  return Date.UTC(y, m - 1, d, h, mi) / 60000;
+}
+
+/**
+ * Whole minutes on the wall clock from `a` to `b` (negative when `b` is earlier); works across midnight.
+ * @param {string} a local time
+ * @param {string} b local time
+ * @returns {number}
+ */
+export function minutesBetween(a, b) {
+  return Math.round(wallMinutes(b) - wallMinutes(a));
+}
+
+/**
+ * A workout's length: "52 min", "1 h", "1 h 5 min". Below 0 or not a number → "0 min".
+ * @param {number} minutes
+ * @returns {string}
+ */
+export function formatDuration(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (!h) return `${m} min`;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+/**
+ * Read a clock time typed as "18:42", "8:05" or "18.42" → "18:42"; anything else → null.
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function parseClock(text) {
+  const m = /^(\d{1,2})[:.](\d{2})$/.exec(String(text ?? '').trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+  return `${pad(Number(m[1]))}:${m[2]}`;
+}
+
+/**
+ * The first local time at or after `fromLocal` whose clock reads `clock`: the same day, or the next day when the
+ * clock is earlier (a workout that ends after midnight).
+ * @param {string} fromLocal "YYYY-MM-DDTHH:MM"
+ * @param {string} clock "HH:MM"
+ * @returns {string}
+ */
+export function clockAfter(fromLocal, clock) {
+  const date = localDate(fromLocal);
+  return clock >= formatTime(fromLocal) ? `${date}T${clock}` : `${addDays(date, 1)}T${clock}`;
+}
+
+/**
+ * Read a local date and time written as "YYYY-MM-DDTHH:MM", "YYYY-MM-DD HH:MM" or "DD/MM/YYYY HH:MM" (any date
+ * `parseDatePrefix` reads, so always day-first) → "YYYY-MM-DDTHH:MM", or null.
+ * @param {string} text
+ * @param {{today?: string}} [opts]
+ * @returns {string|null}
+ */
+export function parseLocalTime(text, { today = todayISO() } = {}) {
+  const m = /^(.+?)(?:T|\s+)(\d{1,2}[:.]\d{2})$/.exec(String(text ?? '').trim());
+  if (!m) return null;
+  const clock = parseClock(m[2]);
+  const d = parseDatePrefix(m[1], { today });
+  if (!clock || !d || d.invalid || d.rest !== '') return null;
+  return `${d.date}T${clock}`;
 }
 
 /** Result for a matched date: real → {date, rest}; impossible → {date: null, rest, invalid: true}. */

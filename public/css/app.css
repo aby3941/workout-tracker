@@ -201,10 +201,12 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .sw-more summary { font-size: 14px; color: var(--ink); font-weight: 600; padding: 12px 0; }
 
 .toast { position: fixed; left: 50%; bottom: calc(var(--tabbar-h) + var(--safe-b) + 84px); transform: translate(-50%, 8px); z-index: 60;
-         max-width: min(92vw, 420px); background: var(--ink); color: var(--page); border-radius: 999px; padding: 10px 16px; font-size: 14px;
+         width: max-content; max-width: min(92vw, 420px); background: var(--ink); color: var(--page); border-radius: 999px; padding: 10px 16px; font-size: 14px;
          text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast:empty { padding: 0; }
+/* a sheet is open (e.g. "Workout saved"): the toast moves to the top so it never covers the sheet */
+html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) + 12px); }
 
 /* ---------- Today ---------- */
 .today-head { margin: 4px 4px 10px; }
@@ -231,7 +233,6 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .suggest.up b { color: var(--good-text); }
 .suggest.up .ic-up { color: var(--good); }
 .suggest .setw { flex: none; font-size: 12.5px; }
-.warm { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; font-variant-numeric: tabular-nums; }
 .plates { font-size: 12.5px; color: var(--ink-2); margin: 8px 0 0; font-variant-numeric: tabular-nums; }
 /* a just-added card (Add exercise), briefly */
 .card.ex { transition: box-shadow .3s; }
@@ -264,6 +265,59 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .save-wrap { padding: 8px 0 4px; margin-top: 12px; text-align: center; }
 .save-wrap span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 
+/* ---------- Today: Batch 2 (times, warm-up checklist, rest timer, done for today, new bests) ---------- */
+.timeline { font-size: 12.5px; color: var(--ink-2); margin: -2px 0 8px; font-variant-numeric: tabular-nums; }
+.timeline b { color: var(--ink); font-weight: 600; }
+
+.warmlist { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 0 10px; }
+.wl-title { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; font-weight: 600; margin: 0; padding: 7px 0 5px; }
+.wl-title .muted { font-weight: 400; color: var(--muted); }
+.wl-item { display: flex; align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid var(--grid); font-size: 14.5px;
+           font-variant-numeric: tabular-nums; cursor: pointer; }
+.wl-item input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--s1); cursor: pointer; }
+.wl-item small { font-size: 12px; color: var(--muted); }
+.wl-item.done > span { color: var(--muted); text-decoration: line-through; }
+
+/* the rest timer under a set (mock screen 2): the clock line, the bar to the target, then +30 s / Skip */
+.rest { display: grid; gap: 6px; margin: 6px 0 2px 54px; padding: 8px 10px; border-radius: 12px; background: var(--chip); font-size: 13px; }
+.rest-text { min-width: 0; }
+.rest-text b { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rest-text span { color: var(--ink-2); }
+.rest-track { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--ink) 10%, transparent); overflow: hidden; }
+.rest-track span { display: block; height: 100%; border-radius: 3px; background: var(--s1); transition: width .9s linear; }
+.rest-actions { display: flex; gap: 6px; margin-top: 2px; }
+.rest.is-ready { box-shadow: inset 0 0 0 1px var(--good); }
+.rest.is-ready .rest-text span { color: var(--good-text); font-weight: 600; }
+.rest.is-ready .rest-track span { background: var(--good); }
+.rest.is-over .rest-text span { color: var(--ink); font-weight: 600; }
+.rest.is-over .rest-track span { background: var(--warning); }
+.chip-btn { position: relative; border: 1px solid var(--border); background: var(--page); border-radius: 999px; padding: 6px 11px; font-size: 13px; min-height: 36px; white-space: nowrap; }
+.chip-btn::after { content: ''; position: absolute; inset: -4px 0; } /* 44px tap target, mock-sized pill */
+@media (prefers-reduced-motion: reduce) { .rest-track span { transition: none; } }
+
+.pill.best { background: color-mix(in srgb, var(--warning) 22%, transparent); border-color: transparent; color: var(--ink); }
+.best-tag { font-style: normal; font-size: 10.5px; color: var(--ink); background: color-mix(in srgb, var(--warning) 30%, transparent);
+            border-radius: 999px; padding: 0 6px; margin-left: 4px; vertical-align: 1px; white-space: nowrap; }
+.donecard .ex-head h2 { font-size: 16px; }
+.donecard .lines { margin-top: 8px; }
+.upnext { border-style: dashed; }
+.upnext h2 { margin: 2px 0; }
+.upnext .btn { margin-top: 10px; }
+
+/* "Workout saved" sheet */
+.sheet.celebrate { text-align: center; }
+.party { font-size: 44px; line-height: 1; margin: 6px 0 2px; }
+.cel-title { font-size: 22px; font-weight: 700; margin: 4px 0 6px; }
+.pr { margin: 8px 0; }
+.pr b { display: block; font-size: 17px; font-weight: 600; }
+.pr span { color: var(--ink-2); font-size: 13px; }
+.sumgrid { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin: 14px 0; }
+.sumgrid div { background: var(--chip); border-radius: 12px; padding: 8px; }
+.sumgrid b { display: block; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sumgrid span { font-size: 11.5px; color: var(--ink-2); }
+.next { font-size: 13.5px; color: var(--ink-2); margin: 4px 0 4px; }
+.next b { color: var(--ink); font-weight: 600; }
+
 /* ---------- Plan ---------- */
 .rotation { display: flex; gap: 4px; margin: 14px 0 0; }
 .rotation span { flex: 1; text-align: center; font-size: 11.5px; padding: 8px 2px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); line-height: 1.2; }
@@ -290,6 +344,8 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .card.hist { padding: 2px 14px 12px; }
 .hist-head { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 8px; border: 0; background: none; padding: 8px 0; min-height: 44px; font-size: 14px; text-align: left; }
 .hist-head .chev { color: var(--muted); }
+.hist-tags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.time-line { margin: -2px 0 2px; font-variant-numeric: tabular-nums; }
 .hline { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 7px 0; border-top: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
 .hline span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .hline span:last-child { color: var(--ink-2); text-align: right; flex: 0 0 auto; max-width: 62%; }
@@ -317,6 +373,10 @@ input.switch:checked { background-color: var(--s1); background-position: 18px 0;
 .setrow label { min-width: 0; padding-right: 10px; }
 .setrow label .sub { display: block; font-size: 12px; margin-top: 1px; }
 .setrow .input-unit.sm { flex: none; }
+.setrow.switch-row { cursor: pointer; margin-top: 0; }
+.switch-row > span { min-width: 0; padding-right: 10px; }
+.switch-row .sub { display: block; font-size: 12px; margin-top: 1px; }
+.ios-note { margin: 0 0 8px; color: var(--muted); }
 .danger-zone h2 { color: var(--critical); }
 .danger-zone .btn { margin-top: 8px; }
 

@@ -16,8 +16,9 @@ const plainSessions = () => [
 ];
 
 describe('CSV_HEADER', () => {
+  // Changed for §18.3 (20/11/2026): the backup gains started_at and finished_at, repeated on every row like note.
   test('exact header', () => {
-    assert.equal(CSV_HEADER, 'date,day,exercise,set,weight,reps,unit,off_day,note');
+    assert.equal(CSV_HEADER, 'date,day,exercise,set,weight,reps,unit,off_day,note,started_at,finished_at');
   });
 });
 
@@ -30,13 +31,14 @@ describe('toCSV', () => {
       ], { offDay: true, note: 'slept badly, "tired"' }),
       session('2026-11-07', 'pushA', [entry('bench', W([56.25, 5], [56.25, 5]))]),
     ];
+    // §18.3 (20/11/2026): two more columns (started_at, finished_at), empty for workouts without times.
     assert.equal(toCSV(data, 'kg'), rows(
-      'date,day,exercise,set,weight,reps,unit,off_day,note',
-      '07/11/2026,Push A,Bench press,1,56.25,5,kg,,',
-      '07/11/2026,Push A,Bench press,2,56.25,5,kg,,',
-      '10/11/2026,Pull A,Deadlift,1,100,7,kg,yes,"slept badly, ""tired"""',
-      '10/11/2026,Pull A,"Zercher, squat",1,60,8,kg,yes,"slept badly, ""tired"""',
-      '10/11/2026,Pull A,"Zercher, squat",2,62.5,6,kg,yes,"slept badly, ""tired"""',
+      'date,day,exercise,set,weight,reps,unit,off_day,note,started_at,finished_at',
+      '07/11/2026,Push A,Bench press,1,56.25,5,kg,,,,',
+      '07/11/2026,Push A,Bench press,2,56.25,5,kg,,,,',
+      '10/11/2026,Pull A,Deadlift,1,100,7,kg,yes,"slept badly, ""tired""",,',
+      '10/11/2026,Pull A,"Zercher, squat",1,60,8,kg,yes,"slept badly, ""tired""",,',
+      '10/11/2026,Pull A,"Zercher, squat",2,62.5,6,kg,yes,"slept badly, ""tired""",,',
     ));
   });
 
@@ -57,9 +59,9 @@ describe('toCSV', () => {
     ];
     assert.equal(toCSV(data, 'lb'), rows(
       CSV_HEADER,
-      '01/11/2026,Legs,Squat,1,225,5,lb,,',
-      '02/11/2026,Pull B,Barbell row,1,135.5,5,lb,,',
-      '03/11/2026,Push B,Overhead press,1,95,5,lb,,',
+      '01/11/2026,Legs,Squat,1,225,5,lb,,,,', // §18.3: + empty started_at, finished_at
+      '02/11/2026,Pull B,Barbell row,1,135.5,5,lb,,,,',
+      '03/11/2026,Push B,Overhead press,1,95,5,lb,,,,',
     ));
   });
 

@@ -82,6 +82,37 @@ Details in [`SPEC.md` §17](SPEC.md).
 | **The Add exercise search finds plurals** ("hammer curls" → Hammer curl), the same way typed names are matched | The list said "No match" for a name that Enter then added. |
 | **Known limits, kept on purpose:** (1) a track follows the order you log: if only the second Lateral raise of a Push day is logged, it counts as the first (its history, and it uses up the first one's set weight); (2) switching kg ↔ lb converts the bar like any other weight (20 kg → 44 lb); type 45 in Data → Settings if your lb bar is 45 lb | (1) Backups store no slot, and the order rule keeps old data and backups working unchanged. Skipping the first superset and doing the second is rare. (2) Changing the units doesn't change the bar you own. |
 
+## Batch 2 — owner approved (20/11/2026)
+
+Details in [`SPEC.md` §18](SPEC.md); approved mock [`design/batch2.html`](design/batch2.html), rest timer **option B** (inside the card).
+
+| Decision | Why |
+|---|---|
+| **Rest timer inside the card (option B):** committing a set's reps (Enter, or leaving the box) starts a timer right under that set; it counts up against the rest range ("Rest 0:48 · aim 1–3 min"), turns "Ready — go when you are" at the minimum and "Over 3 min — get going" after the maximum. +30 s pushes both; Skip removes it. One timer at a time: the next set restarts it, another card moves it. Typing alone starts nothing. The ranges are numbers in `program.js` (`REST_SECONDS`); the "3–5 min" / "1–3 min" text is derived from them | The owner chose the timer on the card over a bar pinned at the top: nothing covers the exercises. One source for the ranges keeps the guidance and the timer in step. |
+| The timer lives in the draft (`draft.rest`), so it survives tab switches, reloads and iOS closing the app; Save, Skip and discarding the draft clear it | iOS kills home-screen apps in the background; the elapsed time comes from the start time, not from a running counter. |
+| **One short beep when the rest is up**, on any tab, only if it became ready in the last few seconds (reopening the app later stays quiet), and the card flashes once. Data → Settings has "Rest timer sound" (on unless switched off) with the note that iPhone web apps can't alert in the background | Web apps can't notify while closed or locked; saying so once avoids a false promise. |
+| The timer slides in only after the tap that left the reps box has finished | Leaving the box by tapping "+ Set" or the next box must work on the first tap (§17.5); moving the page mid-tap made that tap miss. |
+| **Warm-up checklist** on the main lift: one checkbox per warm-up set ("20 × 10, empty bar"), "2 of 4 done". Ticks live in the draft only and reset when the work weight changes | Ticking off the ramp at the gym; it is not part of the logged workout. |
+| **Workout times:** the start is the time of the first reps typed, the finish the time of Save; editing keeps them. Times are local wall-clock "YYYY-MM-DDTHH:MM" strings, like dates. The CSV gains `started_at` / `finished_at`; the text backup a `Time: 18:42–19:34` line (a full date is written only when a clock time alone would be read wrongly, e.g. a start on the day before the workout's date). Older backups and v6 data have no times and show "Time not recorded" | When a workout happened and how long it took stay with it; backups must not lose them, and nothing logged before the update is lost or guessed. |
+| A workout typed in for another day ("Change date", e.g. yesterday's, logged this morning) gets no clock times; it shows "Time not recorded" | The clock would say when it was typed, not when it was done. A late workout that ends after midnight keeps both times. |
+| Today's header says "Last workout: Wed 18/11 at 19:41" — the time it was saved — before a workout starts, and "Started 18:42 · 23 min so far" once it has | The owner asked for "the time which last workout was added". |
+| **"Done for today ✓" until midnight** after a workout is saved with today's date: the day's workouts (times, exercises, bests, Edit) and "Up next — shows here from 12 am" with "Start it now instead" for a double day. The cycle logic is unchanged | Right after a save Today used to jump to the next workout; now the day's work and its bests stay in view until the next day starts. |
+| Saving the second workout of a double day brings "Done for today ✓" back (with both workouts) | "Start it now instead" is for that workout; once it is saved the day is done. The spec leaves this case open. |
+| **New bests:** a track's heaviest weight (plank: longest hold) beating every earlier session; a first-ever exercise or an equal weight never counts. After Save a "Workout saved" sheet celebrates them (🎉 "New best!") or says "Workout saved ✓", with time, exercises and weight lifted. 🏆 pills and "best" tags mark them on the Done card and in History, computed on the fly | Linear progression makes progress visible every week; nothing extra is stored, so edits and imports stay consistent. |
+| History cards show the 🏆 pill with its count ("🏆 1 new best"), as the spec says; the mock showed the cup alone | One pill, the same on Today and in History. |
+
+### Batch 2 — changes after the independent review (20/11/2026)
+
+| Decision | Why |
+|---|---|
+| **A workout is one sitting of at most 4 hours** (`MAX_WORKOUT_MINUTES` in `program.js`). A start time older than that is from an earlier sitting: Today shows "Started 18:42" without "so far", and Save keeps the start but records no finish (History: "Started 18:42"). A late workout that ends after midnight (23:30 – 00:20) is unaffected | A draft started in the evening and saved the next morning showed "12 h 18 min so far" and was stored as a 12-hour workout. The save time says when the draft was saved, not when the workout ended. |
+| **The clock starts with the next reps typed today** when a new workout has no start time, or one from an earlier sitting: a draft typed before this update (v6 drafts have reps but no time), a date changed away and back, or a draft picked up again hours later. Changing a new workout's date drops its start time | Before, only the very first reps of a workout could start the clock, so these workouts were saved with "Finished 19:34" alone. |
+| **Editing a saved workout from History starts no rest timer** (so no beep); new workouts, including ones logged for another date, still do | Correcting yesterday's reps is not a rest between sets. |
+| **"− Set" on the set the rest timer sits under removes the timer** | The timer disappeared from the screen but stayed in the draft and still beeped. |
+| **A new barbell weight resets the warm-up ticks** (Data → Settings) | The warm-up list starts with the empty bar, so a new bar is a new list (§18.2); the old ticks landed on different sets. |
+| **Plank holds are not weight lifted:** the "lifted" tile and the weekly volume chart leave timed exercises out | Their reps are seconds: a weighted plank (2.5 kg × 60 s × 3) added 450 kg "lifted". |
+| The toast stays on one line at iPhone width ("Saved Push B · 20/11/2026"), also above the "Workout saved" sheet | It could only be half the screen wide, so longer messages wrapped into a tall two-line pill. |
+
 ## Process
 
 The rules were written first and agreed before any code. Each change went through three separate steps:

@@ -1,11 +1,14 @@
-// History: every logged workout, newest first, grouped by month; expand, edit or delete.
+// History: every logged workout, newest first, grouped by month; expand, edit or delete. Each card shows when it
+// happened (§18.3) and its new bests (§18.5).
 
 import { DAYS, exerciseName, isTimed } from '../program.js';
 import { sortByDate, formatDate, formatMonthYear, weekdayShort } from '../dates.js';
 import { deleteSession } from '../store.js';
-import { html, setHTML, icon, setsShort, setsLong } from './dom.js';
+import { bestsBySession } from '../analysis.js';
+import { html, setHTML, icon, setsShort } from './dom.js';
 import { confirmSheet, toast } from './sheets.js';
 import { historyPositions, dayName } from './model.js';
+import { timeLine, bestsPill, entryLines } from './summary.js';
 import { editSession } from './today.js';
 
 const FILTERS = [['all', 'All'], ['pull', 'Pull'], ['push', 'Push'], ['legs', 'Legs']];
@@ -18,17 +21,18 @@ const ui = { filter: 'all', expanded: new Set(), newest: null };
 /** "Tue 10/11/2026 · Day 1 · Pull A" — the card's accessible name. */
 const title = (s, pos) => `${weekdayShort(s.date)} ${formatDate(s.date)} · Day ${pos} · ${dayName(s.day)}`;
 
-function card(s, pos, unit) {
+function card(s, pos, unit, bests) {
   const open = ui.expanded.has(s.id);
   const entries = (s.entries || []).filter((e) => e.sets && e.sets.length);
   const extra = entries.length - SUMMARY_ENTRIES;
   return html`<article class="card hist${open ? ' open' : ''}" aria-label="${title(s, pos)}" data-id="${s.id}">
     <button type="button" class="hist-head" data-act="toggle" aria-expanded="${open}">
       <span><b>${weekdayShort(s.date)} ${formatDate(s.date)}</b><span class="muted"> · Day ${pos} · ${dayName(s.day)}</span></span>
-      ${s.offDay ? html`<span class="tagoff">Off day</span>` : icon(open ? 'chevronUp' : 'chevronDown', 'chev')}
+      <span class="hist-tags">${bestsPill(bests)}${s.offDay ? html`<span class="tagoff">Off day</span>` : icon(open ? 'chevronUp' : 'chevronDown', 'chev')}</span>
     </button>
+    <p class="sum time-line">${timeLine(s)}</p>
     ${open
-      ? html`${entries.map((e) => html`<div class="hline"><span>${exerciseName(e.exerciseId, e.name)}</span><span>${setsLong(e.sets, unit, isTimed(e.exerciseId))}</span></div>`)}
+      ? html`<div class="lines">${entryLines(s, unit, bests)}</div>
         ${s.note ? html`<p class="sum note-line">Note: ${s.note}</p>` : ''}`
       : html`<p class="sum">${entries.slice(0, SUMMARY_ENTRIES).map((e) => `${exerciseName(e.exerciseId, e.name)} ${setsShort(e.sets, isTimed(e.exerciseId))}`).join(' · ')}${extra > 0 ? ` · +${extra} more` : ''}</p>`}
     ${open ? html`<div class="hist-actions">
@@ -46,6 +50,7 @@ function card(s, pos, unit) {
 export function renderHistory(root, ctx) {
   const state = ctx.state;
   const positions = historyPositions(state.sessions);
+  const bests = bestsBySession(state.sessions);
   const newest = sortByDate(state.sessions).reverse();
   if (newest.length && newest[0].id !== ui.newest) {
     ui.newest = newest[0].id;
@@ -65,7 +70,7 @@ export function renderHistory(root, ctx) {
     <div class="chips" role="group" aria-label="Filter">${FILTERS.map(([id, label]) => html`<button type="button" class="chip" data-act="filter" data-filter="${id}" aria-pressed="${ui.filter === id}">${label}</button>`)}</div>
     ${!state.sessions.length ? html`<div class="card empty"><p><b>No workouts yet</b></p><p class="muted">Log one in Today, or import a backup in Data.</p></div>`
       : !shown.length ? html`<div class="card empty"><p class="muted">No ${ui.filter} workouts yet.</p></div>` : ''}
-    ${groups.map((g) => html`<h2 class="month">${g.month}</h2>${g.items.map((s) => card(s, positions.get(s.id), state.settings.unit))}`)}
+    ${groups.map((g) => html`<h2 class="month">${g.month}</h2>${g.items.map((s) => card(s, positions.get(s.id), state.settings.unit, bests.get(s.id) || []))}`)}
   </div>`);
 
   root.addEventListener('click', async (e) => {

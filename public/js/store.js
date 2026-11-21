@@ -1,6 +1,6 @@
 // App state persistence. The storage object (localStorage in the app) is always passed in.
 
-import { sortByDate } from './dates.js';
+import { sortByDate, isValidLocalTime } from './dates.js';
 import { convertWeight, barWeight, isValidBarWeight, isValidStep } from './units.js';
 import { roleOf } from './program.js';
 import { baselineKey, isBaselineWeight, occurrencesOf } from './progression.js';
@@ -57,18 +57,29 @@ const validSteps = (raw) => (isObject(raw)
   ? Object.fromEntries(Object.entries(raw).filter(([, v]) => isValidStep(v)))
   : {});
 
+/** Workout time fields (§18.3): optional local wall-clock strings "YYYY-MM-DDTHH:MM". */
+const TIME_FIELDS = ['startedAt', 'finishedAt'];
+
+/** A stored session with an id, without unusable workout times (each time checked on its own). */
+function validSession(s) {
+  const bad = TIME_FIELDS.filter((k) => k in s && !isValidLocalTime(s[k]));
+  if (s.id && !bad.length) return s;
+  const out = s.id ? { ...s } : { ...s, id: newId() };
+  for (const k of bad) delete out[k];
+  return out;
+}
+
 /**
- * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable baselines and steps;
- * a missing or unusable bar weight becomes the empty bar of the stored unit, 20 kg / 45 lb).
+ * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable workout times, baselines
+ * and steps; a missing or unusable bar weight becomes the empty bar of the stored unit, 20 kg / 45 lb). Settings
+ * the defaults don't list (`restSound`, `startNextOn`, §18) are kept as stored.
  * @param {unknown} raw
  * @returns {ReturnType<typeof defaultState>}
  */
 export function migrate(raw) {
   const d = defaultState();
   if (!isObject(raw)) return d;
-  const sessions = Array.isArray(raw.sessions)
-    ? raw.sessions.filter(isObject).map((s) => (s.id ? s : { ...s, id: newId() }))
-    : [];
+  const sessions = Array.isArray(raw.sessions) ? raw.sessions.filter(isObject).map(validSession) : [];
   const stored = isObject(raw.settings) ? raw.settings : {};
   const settings = { ...d.settings, ...stored };
   settings.barWeight = isValidBarWeight(stored.barWeight) ? stored.barWeight : barWeight(settings.unit);

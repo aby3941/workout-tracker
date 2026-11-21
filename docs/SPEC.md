@@ -314,7 +314,7 @@ Bottom tab bar, 5 tabs: **Today · Plan · Progress · History · Data**. Tap ta
 
 ## 13. Out of scope
 
-Accounts, sync, any network use, rest timer, notifications, git.
+Accounts, sync, any network use, background notifications (a rest timer was added in §18; it alerts only while the app is open), git.
 
 ## 14. Set weight ("baselines") — added 10/11/2026, approved by the user
 
@@ -452,3 +452,41 @@ Owner: "I added an exercise, nothing happened" / "tried swapping hanging leg rai
 - Swap sheet: tapping an option applies it and closes; the card shows the new name and a toast "Swapped to <name> — from now on"; Custom… Enter = Save.
 - Every option row in both sheets is a ≥ 48 px button that works on the **first tap**, even while the keyboard is open (no layout shift before the click lands).
 - Tests must use real touch input (mobile emulation with touch, `Input.dispatchTouchEvent`), not only `element.click()`.
+
+## 18. Batch 2 — owner approved 20/11/2026 (mocks: `docs/design/batch2.html`; rest timer = option B, inside the card)
+
+### 18.1 Rest timer (inside the card)
+- **Starts** when a set's reps box gets a valid number and is committed (`change` / Enter / leaving the box). It appears inside that exercise card, directly under that set row (mock screen 2). Only one timer exists: a new set restarts it there; another card moves it.
+- **Counts up** from 0:00. Rest ranges become numbers in `program.js` (the one source): `REST_SECONDS = { main: { min: 180, max: 300 }, accessory: { min: 60, max: 180 } }`; the existing `REST` strings ("3–5 min", "1–3 min") are derived from them.
+- `restPhase(elapsedSeconds, role, extraSeconds = 0)` (pure, program.js) → `{ phase: 'resting' | 'ready' | 'over', target, progress }`: `target = min + extraSeconds`; `progress = min(1, elapsed / target)`; `resting` below target, `ready` from target, `over` after `max + extraSeconds`.
+- Display: "Rest 0:48 · aim 1–3 min" with a progress bar to the target. At `ready`: one short beep (if sound is on), the card flashes once, text "Ready — go when you are". At `over`: text "Over 3 min — get going". Buttons **+30 s** (adds 30 to extraSeconds) and **Skip** (removes the timer).
+- Survives re-renders, tab switches and an app reload: stored in the draft as `draft.rest = { uid, set, startedAt (ms), extra }`; elapsed = now − startedAt. Cleared on Save / Skip / when the draft is discarded.
+- Sound: Web Audio short beep, only after a user gesture (always true here). Setting **"Rest timer sound"** (Data → Settings, switch, default on; `settings.restSound`).
+- Accessibility: the timer is `role="timer"`, `aria-label="Rest timer"`; buttons named `+30 s` and `Skip`.
+- iPhone limit (show once under the setting): "The beep plays only while the app is open — iPhone doesn't let web apps alert in the background."
+
+### 18.2 Warm-up checklist
+- The main-lift card's warm-up line becomes a checklist (mock screen 1): one row per `warmupSets(work, unit, bar)` set, each a checkbox labelled e.g. `Warm-up 20 × 10` (bar set shows "empty bar"), with a header "Warm-up · 2 of 4 done". Ticked rows show as done.
+- Ticks live in the draft (`draft.warmup = { [uid]: [indices] }`), are not saved into the workout, and reset for that card when the warm-up list changes (work weight changed).
+
+### 18.3 Workout times
+- Sessions gain optional `startedAt` and `finishedAt`: local wall-clock strings `"YYYY-MM-DDTHH:MM"` (no time zone, like dates). New helpers in dates.js: `nowLocal(now = new Date())`, `formatTime(local)` → `"18:42"`, `minutesBetween(a, b)`, `formatDuration(min)` → `"52 min"` / `"1 h 5 min"`.
+- `draft.startedAt` is set once, when the first reps value is entered. Save sets `finishedAt` to now for new workouts; editing an old workout keeps its times.
+- Today header (under the heading): before starting — "Last workout: Tue 18/11 at 19:41" (the time it was saved, i.e. `finishedAt` — the owner asked for "the time which last workout was added") (or "Last workout: Tue 18/11" when it has no time; nothing when there is no history); once started — "Started 18:42 · 23 min so far" (minutes update each minute).
+- History cards show "18:42 – 19:34 · 52 min"; workouts without times show "Time not recorded".
+- Backups keep times: CSV gains optional columns `started_at`, `finished_at` (repeated on each row like `note`; old backups without them still import). The text format gains an optional line `Time: 18:42–19:34` per session (parsed back; missing = no times). Round trips must preserve times.
+- `store.migrate` keeps valid time strings, drops invalid ones.
+
+### 18.4 "Done for today" until midnight
+- When at least one workout is saved **with today's date** and no new workout has been started (no draft with reps), Today shows the **Done for today ✓** view (mock screen 4) instead of the next workout: a card per workout saved today (title "Day N of 6 · <Day>", times, every exercise line, new-best badges, an **Edit** button), then an "Up next — shows here from 12 am" card naming the next workout with a button **Start it now instead**.
+- **Start it now instead** shows the normal Today form for the next workout (for double days) for the rest of the day (`settings.startNextOn = today`; ignored on any other date).
+- After local midnight (or when the app is opened on a later day) Today shows the next workout as before. The cycle logic is unchanged.
+- Heading text exactly `Done for today ✓`; button names `Start it now instead` and `Edit`.
+
+### 18.5 New bests
+- `analysis.newBests(previousSessions, session)` (pure) → `[{ exerciseId, role, occurrence, kind, value, previous }]` for each track in `session` whose best set beats every earlier session of the same track (kind `'weight'`: heaviest weight with reps ≥ 1; kind `'hold'` for timed exercises: longest hold). A track's **first-ever** session is never a new best (nothing to beat). Off-day sessions count normally.
+- After Save (new workouts only): a sheet `role="dialog"` named **Workout saved** (mock screen 3). With new bests: 🎉, heading "New best!", one line per best (e.g. "Squat 82.5 kg × 5, 5, 7 — +2.5 kg on your previous best"). Always: tiles for duration (when times exist), exercises, kg lifted; "Next: Day N · <Day> — from tomorrow"; button **Nice** closes it (Escape too). Without new bests the heading is "Workout saved ✓" and no 🎉.
+- Bests are also marked where workouts are shown: a "🏆 N new best(s)" pill on the Done-for-today card and History cards, and a "best" tag on the exercise lines (computed on the fly — nothing extra stored).
+
+### 18.6 Housekeeping
+- `sw.js` cache → `ppl-v7`, PRECACHE equal to the real files. DECISIONS.md rows for each §18 item; README features updated.

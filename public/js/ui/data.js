@@ -163,6 +163,9 @@ export function renderData(root, ctx) {
           aria-label="Barbell weight (${unit})" data-fk="bar-weight" value="${formatNumber(state.settings.barWeight)}" placeholder="${formatNumber(barWeight(unit))}"><span>${unit}</span></form>
       </div>
       <p class="err" data-err="bar" hidden>Enter the empty bar's weight, like ${formatNumber(barWeight(unit))}.</p>
+      <label class="setrow switch-row"><span><span>Rest timer sound</span><span class="muted sub">A short beep when the rest is up</span></span>
+        <input type="checkbox" class="switch" role="switch" aria-label="Rest timer sound" data-input="rest-sound" ${state.settings.restSound !== false ? 'checked' : ''}></label>
+      <p class="cap ios-note">The beep plays only while the app is open — iPhone doesn't let web apps alert in the background.</p>
       <div class="setrow"><span>Dates</span><span class="muted">DD/MM/YYYY (day first)</span></div>
     </div>
 
@@ -182,11 +185,19 @@ export function renderData(root, ctx) {
     barInput.setAttribute('aria-invalid', String(!ok));
     root.querySelector('[data-err="bar"]').hidden = ok;
     if (!ok || w === ctx.state.settings.barWeight) return;
-    ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, barWeight: w } }, { render: false });
+    // A new bar is a new warm-up list (it starts with the empty bar), so the draft's warm-up ticks start again (§18.2).
+    const draft = ctx.state.draft && ctx.state.draft.warmup ? { ...ctx.state.draft, warmup: {} } : ctx.state.draft;
+    ctx.commit({ ...ctx.state, draft, settings: { ...ctx.state.settings, barWeight: w } }, { render: false });
     toast(`Barbell weight: ${formatWeight(w, ctx.state.settings.unit)}`);
   };
   barForm.addEventListener('submit', (e) => { e.preventDefault(); saveBar(); barInput.blur(); });
   barInput.addEventListener('change', saveBar);
+
+  // Rest timer sound (§18.1): on unless switched off.
+  root.querySelector('[data-input="rest-sound"]').addEventListener('change', (e) => {
+    ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, restSound: e.target.checked } }, { render: false });
+    toast(e.target.checked ? 'Rest timer sound on' : 'Rest timer sound off');
+  });
 
   const paste = root.querySelector('[data-input="paste"]');
   const fileInput = root.querySelector('[data-input="file"]');

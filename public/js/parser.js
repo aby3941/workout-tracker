@@ -1,6 +1,8 @@
 // Free-text workout import/export ("10/11/2026 Pull A" / "Deadlift 100x7" / "Note: …").
 
-import { todayISO, formatDate, parseDatePrefix, sortByDate } from './dates.js';
+import {
+  todayISO, formatDate, parseDatePrefix, sortByDate, isValidLocalTime, formatTime, localDate, parseClock, clockAfter, parseLocalTime,
+} from './dates.js';
 import { DAYS, matchExercise, customId, exerciseName, parseDayText, resolveDay } from './program.js';
 import { convertWeight, formatNumber } from './units.js';
 import { parseCSV } from './csv.js';
@@ -149,6 +151,62 @@ export function parseSetTokens(str, { unit = 'kg' } = {}) {
 // ---------------------------------------------------------------- import
 
 const NOTE_RE = /^note\s*:\s*(.*)$/i;
+const TIME_RE = /^time\s*:\s*(.*)$/i;
+
+// ---------------------------------------------------------------- workout times ("Time: 18:42–19:34", §18.3)
+// A side is a clock time on the workout's date (the finish: the first such time after the start, so 23:30–00:20 ends
+// the next day), or a full "DD/MM/YYYY HH:MM" when that would be wrong. Either side may be missing.
+
+const TIME_SIDE = '(?:(\\S+)\\s+)?(\\d{1,2}[:.]\\d{2})';
+const TIME_RANGE_RE = new RegExp(`^(?:${TIME_SIDE})?\\s*[–—-]\\s*(?:${TIME_SIDE})?$`);
+
+/** One side of a Time line → local time, or null when unreadable. `anchor(clock)` places a bare clock time. */
+function readSide(dateText, clockText, anchor, today) {
+  if (dateText != null) return parseLocalTime(`${dateText} ${clockText}`, { today });
+  const clock = parseClock(clockText);
+  return clock ? anchor(clock) : null;
+}
+
+/**
+ * The text of a Time line for a session's times ("18:42–19:34"), or '' when it has none.
+ * @param {{date: string, startedAt?: string, finishedAt?: string}} s
+ * @returns {string}
+ */
+function formatTimeRange(s) {
+  const start = isValidLocalTime(s.startedAt) ? s.startedAt : null;
+  const end = isValidLocalTime(s.finishedAt) ? s.finishedAt : null;
+  if (!start && !end) return '';
+  const full = (local) => `${formatDate(localDate(local))} ${formatTime(local)}`;
+  const startText = !start ? '' : localDate(start) === s.date ? formatTime(start) : full(start);
+  const endShort = end && (start ? clockAfter(start, formatTime(end)) === end : localDate(end) === s.date);
+  const endText = !end ? '' : endShort ? formatTime(end) : full(end);
+  const long = startText.includes(' ') || endText.includes(' ');
+  return long ? `${startText} – ${endText}`.trim() : `${startText}–${endText}`;
+}
+
+/**
+ * Read a Time line's text for a workout on `date` → {startedAt?, finishedAt?}, or null when unreadable.
+ * @param {string} text e.g. "18:42–19:34", "23:30-00:20", "10/11/2026 09:00 – 11/11/2026 09:00"
+ * @param {string} date ISO date of the workout
+ * @param {string} today
+ * @returns {{startedAt?: string, finishedAt?: string}|null}
+ */
+function parseTimeRange(text, date, today) {
+  const m = TIME_RANGE_RE.exec(String(text).trim());
+  if (!m || (!m[2] && !m[4])) return null;
+  const out = {};
+  if (m[2]) {
+    const start = readSide(m[1], m[2], (clock) => `${date}T${clock}`, today);
+    if (!start) return null;
+    out.startedAt = start;
+  }
+  if (m[4]) {
+    const end = readSide(m[3], m[4], (clock) => (out.startedAt ? clockAfter(out.startedAt, clock) : `${date}T${clock}`), today);
+    if (!end) return null;
+    out.finishedAt = end;
+  }
+  return out;
+}
 
 /** Does `str` open with a weight × reps set ("100x5", "62.5 kg x 5", "bw x 8", "bw+10x8", "3x12@45")? */
 function beginsWithSet(str) {
@@ -215,6 +273,11 @@ export function parseImport(text, { unit = 'kg', today = todayISO() } = {}) {
       return;
     }
     const session = { date: c.date, day, offDay, note: c.notes.join('\n'), entries: c.entries };
+    if (c.timeText != null) {
+      const times = parseTimeRange(c.timeText, c.date, today);
+      if (times) Object.assign(session, times);
+      else warnings.push({ line: c.timeLine, text: `Time: ${c.timeText}`, message: "Can't read the time — write it like Time: 18:42–19:34" });
+    }
     const earlier = sessions.findIndex((s) => sessionKey(s) === sessionKey(session));
     if (earlier >= 0) {
       sessions.splice(earlier, 1);
@@ -248,6 +311,12 @@ export function parseImport(text, { unit = 'kg', today = todayISO() } = {}) {
     if (note) {
       if (current) current.notes.push(note[1].trim());
       else warn('Note outside a workout — ignored');
+      return;
+    }
+
+    const time = TIME_RE.exec(line);
+    if (time) {
+      if (current) { current.timeText = time[1].trim(); current.timeLine = lineNo; } else warn('Time outside a workout — ignored');
       return;
     }
 
@@ -305,6 +374,8 @@ export function formatText(sessions, unit) {
   const blocks = sortByDate(sessions).map((s) => {
     const dayName = DAYS[s.day] ? DAYS[s.day].name : s.day;
     const lines = [`${formatDate(s.date)} ${dayName}${s.offDay ? ' (off day)' : ''}`];
+    const time = formatTimeRange(s);
+    if (time) lines.push(`Time: ${time}`);
     for (const e of s.entries || []) {
       if (!e.sets || !e.sets.length) continue;
       lines.push(`${exerciseName(e.exerciseId, e.name)} ${formatSetText(e.sets)}`);

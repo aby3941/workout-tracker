@@ -1,7 +1,7 @@
-// Progress analysis: e1RM, per-exercise series, PBs, weekly volume, summary, watch list.
+// Progress analysis: e1RM, per-exercise series, PBs, new bests, weekly volume, summary, watch list.
 
 import { sortByDate, weekStart, addDays, compareISO, isValidISO } from './dates.js';
-import { MAIN_LIFTS, roleOf, exerciseName } from './program.js';
+import { MAIN_LIFTS, roleOf, exerciseName, isTimed } from './program.js';
 import { entriesFor, maxWeight, suggestMain, occurrencesOf } from './progression.js';
 import { roundTo, cleanNumber } from './units.js';
 
@@ -18,6 +18,27 @@ export function e1rm(weight, reps) {
 }
 
 const volumeOf = (sets) => cleanNumber(sets.reduce((sum, s) => sum + (Number(s.weight) || 0) * (Number(s.reps) || 0), 0));
+
+/**
+ * Volume of one workout: Σ weight × reps over every set (the number weekly volume adds up). Timed exercises (plank)
+ * are left out: their "reps" are seconds, so weight × seconds is not weight lifted.
+ * @param {{entries?: Array<{exerciseId: string, sets?: Array<{weight: number, reps: number}>}>}} session
+ * @returns {number}
+ */
+export function sessionVolume(session) {
+  return cleanNumber((session.entries || []).reduce((sum, e) => sum + (isTimed(e.exerciseId) ? 0 : volumeOf(e.sets || [])), 0));
+}
+
+/**
+ * Identity of a track (§17.1) as one string, e.g. "lateralRaise|accessory|1".
+ * @param {string} exerciseId
+ * @param {'main'|'accessory'} role
+ * @param {number} occurrence
+ * @returns {string}
+ */
+export function trackKey(exerciseId, role, occurrence) {
+  return `${exerciseId}|${role}|${occurrence}`;
+}
 
 /**
  * One point per session for one track (exercise, role, occurrence), oldest first.
@@ -52,7 +73,7 @@ export function exercisesInData(sessions) {
     entries.forEach((e, i) => {
       if (!e.sets || !e.sets.length) return; // no sets = no data (entriesFor skips these too)
       const role = roleOf(s.day, e.exerciseId);
-      const key = `${e.exerciseId}|${role}|${occ[i]}`;
+      const key = trackKey(e.exerciseId, role, occ[i]);
       if (!seen.has(key)) seen.set(key, { exerciseId: e.exerciseId, name: exerciseName(e.exerciseId, e.name), role, occurrence: occ[i] });
     });
   }
@@ -75,6 +96,76 @@ export function personalBests(sessions) {
   });
 }
 
+// ---------------------------------------------------------------- new bests (§18.5)
+
+/**
+ * The best set of one logged entry, counting only sets with reps ≥ 1: the longest hold for a timed exercise
+ * (kind 'hold', plank), else the heaviest weight (kind 'weight'). null when no set counts.
+ * @returns {{kind: 'weight'|'hold', value: number}|null}
+ */
+function bestSet(exerciseId, sets) {
+  const counted = (sets || []).filter((st) => Number(st.reps) >= 1);
+  if (!counted.length) return null;
+  const hold = isTimed(exerciseId);
+  return { kind: hold ? 'hold' : 'weight', value: Math.max(...counted.map((st) => Number(hold ? st.reps : st.weight) || 0)) };
+}
+
+/** Every track of a session with its best set: [{key, exerciseId, role, occurrence, kind, value}]. */
+function sessionTracks(session) {
+  const entries = session.entries || [];
+  const occ = occurrencesOf(entries);
+  const out = [];
+  entries.forEach((e, i) => {
+    const best = bestSet(e.exerciseId, e.sets);
+    if (!best) return;
+    const role = roleOf(session.day, e.exerciseId);
+    out.push({ key: trackKey(e.exerciseId, role, occ[i]), exerciseId: e.exerciseId, role, occurrence: occ[i], ...best });
+  });
+  return out;
+}
+
+/** The tracks of `session` that beat `bestSoFar` (key → best value of every earlier session); none for a first track. */
+function beats(session, bestSoFar) {
+  return sessionTracks(session)
+    .filter((t) => bestSoFar.has(t.key) && t.value > bestSoFar.get(t.key))
+    .map((t) => ({ exerciseId: t.exerciseId, role: t.role, occurrence: t.occurrence, kind: t.kind, value: t.value, previous: bestSoFar.get(t.key) }));
+}
+
+/** Fold a session's tracks into the running best values. */
+function addBests(bestSoFar, session) {
+  for (const t of sessionTracks(session)) bestSoFar.set(t.key, Math.max(t.value, bestSoFar.get(t.key) ?? -Infinity));
+}
+
+/**
+ * New bests of a workout (§18.5): every track (exercise, role, occurrence) whose best set beats every earlier session
+ * of that track — kind 'weight' = the heaviest weight with reps ≥ 1, kind 'hold' (timed, plank) = the longest hold.
+ * A track's first-ever session is never a best, nor is equalling the previous best. Off days count normally.
+ * @param {Array<object>} previousSessions the earlier workouts (any order)
+ * @param {object} session
+ * @returns {Array<{exerciseId: string, role: 'main'|'accessory', occurrence: number, kind: 'weight'|'hold', value: number, previous: number}>}
+ */
+export function newBests(previousSessions, session) {
+  const bestSoFar = new Map();
+  for (const s of previousSessions || []) addBests(bestSoFar, s);
+  return beats(session, bestSoFar);
+}
+
+/**
+ * `newBests` of every workout against the ones before it in date order (stable: same-date workouts in saved order),
+ * in one pass — what History and Today mark with 🏆 (computed on the fly, nothing stored).
+ * @param {Array<object>} sessions
+ * @returns {Map<string, ReturnType<typeof newBests>>} session id → its new bests
+ */
+export function bestsBySession(sessions) {
+  const bestSoFar = new Map();
+  const out = new Map();
+  for (const s of sortByDate(sessions)) {
+    out.set(s.id, beats(s, bestSoFar));
+    addBests(bestSoFar, s);
+  }
+  return out;
+}
+
 /**
  * Total volume (Σ weight × reps) and session count per Monday-week, oldest first, gaps zero-filled.
  * @param {Array<object>} sessions
@@ -88,7 +179,7 @@ export function weeklyVolume(sessions) {
   for (const s of sorted) {
     const wk = weekStart(s.date);
     const cur = byWeek.get(wk) || { volume: 0, count: 0 };
-    cur.volume += (s.entries || []).reduce((sum, e) => sum + volumeOf(e.sets || []), 0);
+    cur.volume += sessionVolume(s);
     cur.count += 1;
     byWeek.set(wk, cur);
   }
