@@ -1,13 +1,14 @@
 // Today: log the next workout, or edit an old one loaded from History; once today's workout is saved, "Done for
 // today ✓" until midnight (§18.4). The form lives in `state.draft` once the user changes anything (autosaved); until
 // then it is rebuilt from the plan on every render, so swaps, goal and abs changes flow straight in. Suggestions come
-// from progression.js. The draft also holds the workout's start time (`startedAt`), the rest timer (`rest`, §18.1)
-// and the warm-up ticks (`warmup`, §18.2).
+// from progression.js. The draft also holds the workout's start time (`startedAt`), the one rest or set timer (`timer`,
+// §18.1 / §19.2; the sets keep the recorded `rest` and `duration`) and the warm-up ticks (`warmup`, §18.2).
 
 import {
   DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS, HOLD_GOAL_SECONDS, MAX_WORKOUT_MINUTES,
   nextWorkout, cyclePosition, roleOf, mainPrescription, accessoryPrescription,
   matchExercise, searchExercises, customId, isCustom, exerciseName, isTimed, equipmentOf, hasPlateLine,
+  supersetPairs, loggedSet, isRecordedRest, isRecordedDuration,
 } from '../program.js';
 import {
   suggestMain, suggestAccessory, suggestTimed, applyBaseline, baselineKey, warmupSets, maxWeight, repsToGo, occurrencesOf,
@@ -15,7 +16,7 @@ import {
 import { formatWeight, formatNumber, parseWeightInput, stepFor, smallestIncrement, platesText } from '../units.js';
 import {
   formatDate, formatDateShort, weekdayShort, compareISO, isValidISO, daysBetween, addDays, sortByDate,
-  nowLocal, isValidLocalTime, formatTime, localDate, minutesBetween, formatDuration,
+  nowLocal, isValidLocalTime, formatTime, localDate, minutesBetween, formatDuration, formatClock,
 } from '../dates.js';
 import { mergeSessions, replaceSession, deleteSession, consumeBaselines, sessionKey } from '../store.js';
 import { bestsBySession } from '../analysis.js';
@@ -23,7 +24,10 @@ import { html, setHTML, icon, plural, setsLong, focusKey, restoreFocus } from '.
 import { openSheet, confirmSheet, toast, keepFocusOnTap } from './sheets.js';
 import { openSwapSheet, openSetWeightSheet } from './pickers.js';
 import { dayPlan, dayName, partnerOf, trackName, historyPositions } from './model.js';
-import { restMarkup, restView, updateRest, usableRest, unlockSound, beep, REST_MORE_SECONDS } from './rest.js';
+import { usableTimer, restTaken, setTaken, nextAfter, nextToDo, pairWith } from '../timers.js';
+import {
+  restMarkup, restView, updateRest, setTimerMarkup, updateSetTimer, rowStartMarkup, unlockSound, beep, REST_MORE_SECONDS,
+} from './rest.js';
 import { doneMarkup, openSavedSheet } from './summary.js';
 
 /** Most sets per exercise (matches the import cap, so every logged workout survives a text backup). */
@@ -41,19 +45,21 @@ const WEIGHT_HEADS = { barbell: 'Total weight', machine: 'Weight (stack)', cable
 /** How often the rest timer, the "min so far" line and the midnight check update. */
 const TICK_MS = 1000;
 /**
- * The rest timer's buttons ignore taps this soon after a commit made it appear: on a phone, tapping the next box
- * commits the one you left, the timer slides in under it, and the same tap must not land on "Skip".
+ * The timers' buttons ignore taps this soon after a commit or a Start made them appear: on a phone, tapping the next
+ * box commits the one you left, a timer slides in under it, and the same tap must not land on "Skip" or "Cancel".
  */
-const REST_TAP_GUARD_MS = 400;
+const TIMER_TAP_GUARD_MS = 400;
 /** The ready beep / flash only when the rest became ready this recently (not when the app is reopened later). */
 const READY_FRESH_S = 5;
 
 // Screen memory that is not saved: which cards are open, the date editor, inputs holding unreadable text,
-// when the last save happened, the last committed reps box, when a commit last moved the rest timer, and the rest
-// phase last seen (so "ready" beeps once).
+// when the last save happened, the last committed reps box, the reps box being typed in and what it held before the
+// first keystroke (only a set that was empty is a new set — one that had reps is being corrected), when a commit or a
+// Start last moved the timer, where the last timer was (after Skip / Cancel the "Start set N" button carries on from
+// there, `nextToDo`), and the rest phase last seen (so "ready" beeps once).
 const ui = {
   formId: '', opened: new Set(), dateOpen: false, bad: new Set(), savedAt: 0,
-  committed: '', restMovedAt: 0, restSeen: { key: '', phase: '' },
+  committed: '', typing: { key: '', from: null }, timerMovedAt: 0, lastTimer: null, restSeen: { key: '', phase: '' },
 };
 /**
  * One app-wide tick a second, started by the first draw of Today: it watches the rest timer on every tab (the "ready"
@@ -126,10 +132,18 @@ function usableDraft(state, today) {
     if (!e.sets.length) e.sets.push(blankSet());
   });
   if (d.editingId && !state.sessions.some((s) => s.id === d.editingId)) d.editingId = null;
-  // Batch 2 fields (§18): a damaged start time, rest timer or warm-up list is dropped, never shown.
+  // Batch 2 fields (§18): a damaged start time or warm-up list is dropped, never shown.
   if (d.startedAt !== undefined && !isValidLocalTime(d.startedAt)) delete d.startedAt;
-  if (d.rest !== undefined && !(usableRest(d.rest) && d.entries.some((e) => e.uid === d.rest.uid))) delete d.rest;
   if (d.warmup !== undefined && !(d.warmup && typeof d.warmup === 'object' && !Array.isArray(d.warmup))) delete d.warmup;
+  // §19: Batch 2's `rest` became `timer` when the state was loaded (store.migrate). The timer goes when it is damaged,
+  // its set is gone, it is more than 4 hours old (an earlier sitting; a rest it recorded stays on its set), or the
+  // form edits a saved workout (no timers there).
+  delete d.rest;
+  if (d.timer !== undefined) {
+    const timer = !d.editingId && usableTimer(d.timer, Date.now());
+    const entry = timer && d.entries.find((e) => e.uid === timer.uid);
+    if (!entry || timer.set >= entry.sets.length) delete d.timer;
+  }
   return d;
 }
 
@@ -155,17 +169,20 @@ function isDoneForToday(state, today) {
 
 /**
  * The form on screen: the saved draft, or a fresh form for the next workout.
- * A new-workout draft left from an earlier day with no reps typed (and a date the user didn't pick) moves
- * to today — nothing in it belongs to that day. One with reps keeps its date: those reps were done then.
+ * A new-workout draft left from an earlier day with no reps typed and no workout started in this sitting (a set timer
+ * started just before midnight, §18.3; and a date the user didn't pick) moves to today — nothing in it belongs to that
+ * day, so an old start time goes too. One with reps, or still in its sitting, keeps its date: it was done then.
  * Weights the user hasn't typed always follow the current suggestion (date, unit, set weights, history).
  */
 function currentForm(ctx) {
   const today = ctx.today();
+  const hadTimer = Boolean(ctx.state.draft && ctx.state.draft.timer);
   const draft = usableDraft(ctx.state, today);
   if (draft) {
-    let changed = false;
-    if (!draft.editingId && !draft.dateChosen && compareISO(draft.date, today) < 0 && !draft.entries.some(hasReps)) {
+    let changed = hadTimer && !draft.timer; // a stale timer was dropped: save that
+    if (!draft.editingId && !draft.dateChosen && compareISO(draft.date, today) < 0 && !draft.entries.some(hasReps) && !liveStart(draft)) {
       draft.date = today;
+      delete draft.startedAt;
       changed = true;
     }
     if (syncDraft(ctx.state, draft)) changed = true;
@@ -193,6 +210,7 @@ function syncDraft(state, form) {
     bySlot.delete(uid);
     if (e && !(untouched(e) && (e.exerciseId !== it.exerciseId || e.sets.length !== it.sets))) { planned.push(e); continue; }
     changed = true;
+    if (form.timer && form.timer.uid === uid) delete form.timer; // its set now belongs to another exercise
     planned.push({ uid, slotKey: it.slotKey, exerciseId: it.exerciseId, name: it.name, sets: Array.from({ length: it.sets }, blankSet) });
   }
   // Slot entries the plan no longer has (abs switched off, a combo swapped away) go unless they hold the user's numbers.
@@ -200,6 +218,7 @@ function syncDraft(state, form) {
   if ([...bySlot.values()].some(untouched)) changed = true;
   if (!changed) return false;
   form.entries = [...kept.filter((e) => e.uid === 'main'), ...planned, ...kept.filter((e) => e.uid !== 'main')];
+  if (form.timer && !form.entries.some((e) => e.uid === form.timer.uid)) delete form.timer;
   prefill(state, form);
   return true;
 }
@@ -329,12 +348,16 @@ function warmupTicks(form, entry, count) {
 
 /**
  * Opening rule: the main lift and the first exercise that still has an empty reps box are open; an exercise
- * with any reps stays open; a tapped card opens. Open cards stay open while this form is on screen.
+ * with any reps stays open; a tapped card opens. The card holding the timer, or the next set to do with its
+ * "Start set N" button, is open too (§19.2; after a reload a superset's second card may have no reps yet). Open cards
+ * stay open while this form is on screen.
  */
-function updateOpen(cards) {
+function updateOpen(cards, scene) {
   for (const c of cards) if (c.info.main || hasReps(c.entry)) ui.opened.add(c.entry.uid);
   const firstEmpty = cards.find((c) => !c.info.main && c.entry.sets.some((s) => !(s.reps > 0)));
   if (firstEmpty) ui.opened.add(firstEmpty.entry.uid);
+  const timed = scene && (scene.timer || scene.todo);
+  if (timed) ui.opened.add(timed.uid);
 }
 
 // ---------------------------------------------------------------- suggestion copy
@@ -426,10 +449,103 @@ function warmupMarkup(form, entry, unit, bar) {
   </div>`;
 }
 
-/** The rest timer when it belongs under this set of this entry. */
-function restUnder(form, entry, i, role) {
-  const rest = usableRest(form.rest);
-  return rest && rest.uid === entry.uid && rest.set === i ? restMarkup(rest, role, Date.now()) : '';
+// ---------------------------------------------------------------- timers (§19.2)
+
+/** The superset pairs on the form as [aUid, bUid] (plan items found by their uid), when both cards are there. */
+function formPairs(state, form) {
+  if (!DAYS[form.day] || !Array.isArray(form.entries)) return [];
+  const plan = dayPlan(state, form.day);
+  const uidOf = new Map([...planIndex(plan)].map(([uid, it]) => [it, uid]));
+  const uids = new Set(form.entries.map((e) => e.uid));
+  return supersetPairs(plan).map(([a, b]) => [uidOf.get(a), uidOf.get(b)]).filter(([a, b]) => uids.has(a) && uids.has(b));
+}
+
+/**
+ * What the timers need for one drawing: the running timer (new workouts only — an edit runs none), the superset
+ * pairs, and while no timer runs the next set to do (it gets the "Start set N" button), counted from where the last
+ * timer was.
+ */
+function timerScene(state, form, nowMs = Date.now()) {
+  const pairs = formPairs(state, form);
+  const timer = form.editingId ? null : usableTimer(form.timer, nowMs);
+  return { nowMs, pairs, timer, todo: form.editingId || timer ? null : nextToDo(form.entries, pairs, ui.lastTimer) };
+}
+
+/** The role a rest box aims by: the exercise's, accessory for a superset's second exercise (its round rest). */
+function restRoleOf(form, entry, pairs) {
+  const pair = pairWith(pairs, entry.uid);
+  return pair && pair[1] === entry.uid ? 'accessory' : roleOf(form.day, entry.exerciseId);
+}
+
+/** The rest box's Start button for a `nextAfter` target: {label, sub?, aria?, wide}, or null (nothing left). */
+function startLabel(form, start) {
+  const target = start && form.entries.find((e) => e.uid === start.uid);
+  if (!target) return null;
+  if (start.kind === 'set') return { label: `Start set ${start.set + 1}`, wide: false };
+  if (start.kind === 'round') return { label: `Start round ${start.set + 1} · ${target.name}`, wide: true };
+  return { label: 'Start next exercise', sub: target.name, aria: 'Start next exercise', wide: true };
+}
+
+/**
+ * The muted line under a committed set: what was recorded — "set 0:38", "rest 2:41 · set 0:38" or "rest 2:41" — and on
+ * a superset's first exercise where the round goes ("· then straight to Lateral raise"). Nothing when nothing was
+ * recorded.
+ */
+function metaText(form, entry, i, pairs) {
+  const set = entry.sets[i];
+  if (!set || !(set.reps > 0)) return '';
+  const parts = [];
+  if (isRecordedRest(set.rest)) parts.push(`rest ${formatClock(set.rest)}`);
+  if (isRecordedDuration(set.duration)) parts.push(`set ${formatClock(set.duration)}`);
+  if (!parts.length) return '';
+  const pair = pairWith(pairs, entry.uid);
+  const partner = pair && pair[0] === entry.uid ? form.entries.find((e) => e.uid === pair[1]) : null;
+  if (partner && partner.sets[i]) parts.push(`then straight to ${partner.name}`);
+  return parts.join(' · ');
+}
+
+/** What sits under set row i of a card: the muted line, then the timer that belongs there or the row's Start button. */
+function belowRow(form, entry, i, scene) {
+  const meta = metaText(form, entry, i, scene.pairs);
+  const out = [meta ? html`<p class="setmeta" data-below>${meta}</p>` : ''];
+  const t = scene.timer;
+  if (t && t.uid === entry.uid && t.set === i) {
+    if (t.kind === 'set') {
+      const before = entry.sets[i] && isRecordedRest(entry.sets[i].rest) ? entry.sets[i].rest : null;
+      out.push(setTimerMarkup(t, scene.nowMs, before));
+    } else {
+      const pair = pairWith(scene.pairs, entry.uid);
+      const start = startLabel(form, nextAfter(form.entries, scene.pairs, entry.uid, i, { auto: false }).start);
+      out.push(restMarkup(t, restRoleOf(form, entry, scene.pairs), scene.nowMs, {
+        start, wide: Boolean(start && start.wide), pair: Boolean(pair && pair[1] === entry.uid),
+      }));
+    }
+  } else if (scene.todo && scene.todo.uid === entry.uid && scene.todo.set === i) {
+    out.push(rowStartMarkup(i));
+  }
+  return out;
+}
+
+/** "⇣ superset — no rest in between" between a superset's two cards when they follow each other. */
+function supersetLink(scene, entry, next) {
+  const pair = pairWith(scene.pairs, entry.uid);
+  return pair && next && pair[0] === entry.uid && pair[1] === next.uid
+    ? html`<p class="ss-link"><span aria-hidden="true">⇣</span> superset — no rest in between</p>` : '';
+}
+
+/**
+ * Scroll a card into view when it is not fully on screen above the tab bar: centred when it fits, else from its top.
+ * @param {string} uid
+ */
+function bringIntoView(uid) {
+  const sec = document.querySelector(`#view section[data-uid="${CSS.escape(uid)}"]`);
+  if (!sec) return;
+  const bar = document.querySelector('nav.tabbar');
+  const bottom = bar ? bar.getBoundingClientRect().top : window.innerHeight;
+  const r = sec.getBoundingClientRect();
+  if (r.top >= 0 && r.bottom <= bottom) return;
+  const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  sec.scrollIntoView({ block: r.height <= bottom - 16 ? 'center' : 'start', behavior: reduce ? 'auto' : 'smooth' });
 }
 
 // ---------------------------------------------------------------- markup
@@ -459,7 +575,7 @@ function setRow(c, set, i, unit) {
   </div>`;
 }
 
-function cardMarkup(c, state, form) {
+function cardMarkup(c, state, form, scene) {
   const { entry, info, s } = c;
   const unit = state.settings.unit;
   const bar = state.settings.barWeight;
@@ -491,7 +607,7 @@ function cardMarkup(c, state, form) {
     ${info.main ? warmupMarkup(form, entry, unit, bar) : ''}
     <div class="sets">
       <div class="set-row head" aria-hidden="true"><span>Set</span><span>${WEIGHT_HEADS[info.equipment] || 'Weight'}</span><span></span><span>${seconds ? 'Seconds' : 'Reps'}</span></div>
-      ${entry.sets.map((set, i) => html`${setRow(c, set, i, unit)}${restUnder(form, entry, i, info.role)}`)}
+      ${entry.sets.map((set, i) => html`${setRow(c, set, i, unit)}${belowRow(form, entry, i, scene)}`)}
     </div>
     ${info.plates ? html`<p class="plates" data-plates ${plates ? '' : 'hidden'}>${plates}</p>` : ''}
     ${info.equipment === 'bodyweight' ? html`<p class="hint">Added weight: 0 = bodyweight only.</p>` : ''}
@@ -538,12 +654,12 @@ function timelineMarkup(state, form) {
   return html`Last workout: ${shortDay(last.date)}, saved ${shortDay(localDate(done))} at ${formatTime(done)}`;
 }
 
-/** The rest timer of the stored draft and the role it rests for, or null. */
+/** The running rest timer of the stored draft and the role it aims by, or null (a set timer never beeps). */
 function draftRest(state) {
   const d = state.draft;
-  const rest = d && Array.isArray(d.entries) ? usableRest(d.rest) : null;
-  const entry = rest && d.entries.find((e) => e && e.uid === rest.uid);
-  return entry ? { rest, role: roleOf(d.day, entry.exerciseId) } : null;
+  const timer = d && Array.isArray(d.entries) && !d.editingId ? usableTimer(d.timer, Date.now()) : null;
+  const entry = timer && timer.kind === 'rest' && d.entries.find((e) => e && e.uid === timer.uid);
+  return entry ? { rest: timer, role: restRoleOf(d, entry, formPairs(state, d)) } : null;
 }
 
 /**
@@ -623,9 +739,10 @@ export function renderToday(root, ctx) {
   const unit = state.settings.unit;
   const form = currentForm(ctx);
   const formId = `${form.editingId || 'new'}|${form.date}|${form.day}`;
-  if (formId !== ui.formId) { ui.formId = formId; ui.opened = new Set(); ui.bad.clear(); ui.committed = ''; }
+  if (formId !== ui.formId) { ui.formId = formId; ui.opened = new Set(); ui.bad.clear(); ui.committed = ''; ui.lastTimer = null; }
   let cards = cardsFor(state, form);
-  updateOpen(cards);
+  const scene = timerScene(state, form);
+  updateOpen(cards, scene);
   const editing = Boolean(form.editingId);
   const timeline = timelineMarkup(state, form);
 
@@ -647,7 +764,7 @@ export function renderToday(root, ctx) {
     ${backupBanner(state, today)}
     <label class="toggle-row"><span><b>Off day</b><span class="muted">Bad sleep or food — misses won't count</span></span>
       <input type="checkbox" class="switch" role="switch" aria-label="Off day" data-input="offday" ${form.offDay ? 'checked' : ''}></label>
-    <div class="cards">${cards.map((c) => cardMarkup(c, state, form))}</div>
+    <div class="cards">${cards.map((c, k) => html`${cardMarkup(c, state, form, scene)}${supersetLink(scene, c.entry, cards[k + 1] && cards[k + 1].entry)}`)}</div>
     <button type="button" class="add" data-act="add-ex" data-fk="add-ex">+ Add exercise</button>
     <label class="note-field"><span>Note</span>
       <textarea rows="2" aria-label="Note" data-input="note" placeholder="Optional — e.g. slept badly">${form.note || ''}</textarea></label>
@@ -674,14 +791,14 @@ export function renderToday(root, ctx) {
     cards = cardsFor(ctx.state, form);
     const c = cards.find((x) => x.entry === entry);
     const tpl = document.createElement('template');
-    setHTML(tpl, cardMarkup(c, ctx.state, form));
+    setHTML(tpl, cardMarkup(c, ctx.state, form, timerScene(ctx.state, form)));
     sec.replaceWith(tpl.content);
     restoreFocus(root, key);
   };
   /** Open any card the opening rule now asks for (after reps are typed). */
   const openMore = () => {
     const before = new Set(ui.opened);
-    updateOpen(cardsFor(ctx.state, form));
+    updateOpen(cardsFor(ctx.state, form), timerScene(ctx.state, form));
     for (const e of form.entries) if (ui.opened.has(e.uid) && !before.has(e.uid)) redrawCard(e);
   };
   /** The line under the heading, brought up to date. */
@@ -692,33 +809,89 @@ export function renderToday(root, ctx) {
     el.hidden = !markup;
     setHTML(el, markup);
   };
-
-  // ------------------------------------------------ rest timer (§18.1)
-
-  const restRole = (rest) => {
-    const entry = form.entries.find((x) => x.uid === rest.uid);
-    return entry ? roleOf(form.day, entry.exerciseId) : 'accessory';
+  /**
+   * The workout starts (§18.3; review 24/11/2026) at the first Start tap or the first reps typed, whichever comes first,
+   * so the first set's time is inside the workout. Only a new workout logged on its own date (one typed in later for
+   * another day gets no clock times — they would say when it was typed, not when it was done); a start from an earlier
+   * sitting (`liveStart`: more than 4 hours ago, a draft from before the update, a date changed back to today) starts
+   * the clock again.
+   */
+  const startClock = () => {
+    if (form.editingId || form.date !== ctx.today() || liveStart(form)) return;
+    form.startedAt = nowLocal();
+    updateTimeline();
   };
-  /** Draw the timer under its set (removing it from wherever it was). */
-  const placeRest = () => {
-    for (const old of root.querySelectorAll('[data-rest]')) old.remove();
-    const rest = usableRest(form.rest);
-    if (!rest) return;
-    const row = root.querySelector(`section[data-uid="${CSS.escape(rest.uid)}"] .set-row[data-row="${rest.set}"]`);
-    if (!row) return;
-    const tpl = document.createElement('template');
-    setHTML(tpl, restMarkup(rest, restRole(rest), Date.now()));
-    row.after(tpl.content);
+
+  // ------------------------------------------------ rest and set timers (§18.1, §19.2)
+
+  /**
+   * Redraw what sits under every set row (muted lines, the timer, the "Start set N" button) for the current state,
+   * opening the card that holds the timer or the button first.
+   */
+  const placeTimers = () => {
+    const scene = timerScene(ctx.state, form);
+    const holder = scene.timer || scene.todo;
+    const shut = holder && !ui.opened.has(holder.uid) && form.entries.find((x) => x.uid === holder.uid);
+    if (shut) { ui.opened.add(shut.uid); redrawCard(shut); }
+    for (const old of root.querySelectorAll('[data-below]')) old.remove();
+    for (const sec of root.querySelectorAll('section[data-uid]')) {
+      const entry = form.entries.find((e) => e.uid === sec.dataset.uid);
+      if (!entry) continue;
+      for (const row of sec.querySelectorAll('.set-row[data-row]')) {
+        const tpl = document.createElement('template');
+        setHTML(tpl, belowRow(form, entry, Number(row.dataset.row), scene));
+        row.after(tpl.content);
+      }
+    }
   };
-  /** Bring the drawn timer's clock, bar and phase up to date. */
-  const tickRest = () => {
-    const rest = usableRest(form.rest);
-    const el = root.querySelector('[data-rest]');
-    if (rest && el) updateRest(el, rest, restRole(rest), Date.now());
+  /** Bring the drawn timer's clock (and the rest box's bar and phase) up to date; a timer past 4 hours goes. */
+  const tickTimers = () => {
+    if (form.editingId || !form.timer) return;
+    const now = Date.now();
+    const timer = usableTimer(form.timer, now);
+    if (!timer) {
+      noteTimer();
+      delete form.timer;
+      if (ctx.state.draft === form) changed();
+      placeTimers();
+      return;
+    }
+    const el = root.querySelector('[data-timer]');
+    const entry = form.entries.find((x) => x.uid === timer.uid);
+    if (!el || !entry) return;
+    if (timer.kind === 'set') { updateSetTimer(el, timer, now); return; }
+    const pairs = formPairs(ctx.state, form);
+    const pair = pairWith(pairs, entry.uid);
+    updateRest(el, timer, restRoleOf(form, entry, pairs), now, { pair: Boolean(pair && pair[1] === entry.uid) });
+  };
+  /** A timer button tap that may be the same tap that just made the timer appear (see TIMER_TAP_GUARD_MS). */
+  const tooSoon = () => Date.now() - ui.timerMovedAt < TIMER_TAP_GUARD_MS;
+  /** Remember where the timer is (or was): once it goes, the "Start set N" button carries on from there. */
+  const noteTimer = () => { if (form.timer) ui.lastTimer = { uid: form.timer.uid, set: form.timer.set }; };
+  /**
+   * Start the set timer of set `i` of entry `uid` (a Start button), recording `rest` on that set first (null: none, as
+   * for the row's "Start set N"). A target in another card opens and comes into view.
+   */
+  const startSet = (uid, i, rest) => {
+    const entry = form.entries.find((x) => x.uid === uid);
+    if (!entry || !entry.sets[i]) return;
+    const now = Date.now();
+    const from = form.timer ? form.timer.uid : uid;
+    if (rest != null) entry.sets[i].rest = rest;
+    form.timer = { kind: 'set', uid, set: i, startedAt: now };
+    noteTimer();
+    ui.timerMovedAt = now;
+    startClock();
+    changed();
+    placeTimers(); // opens the target's card
+    if (from !== uid) bringIntoView(uid);
   };
   /**
-   * A reps box was committed (change / Enter / leaving it): with a valid number the timer (re)starts under that set.
-   * Committing the same value twice (Enter, then leaving the box) keeps the running timer.
+   * A reps box was committed (change / Enter / leaving it) with a valid number (§19.2): a set timer running for that set
+   * records its time; then on a superset's first exercise the partner's set starts by itself (its card opens and comes
+   * into view), else a rest timer starts under the set. Only a new set does this — one whose box was empty before it
+   * was typed in: committing the same value again (Enter, then leaving the box) or correcting a set that already had
+   * reps leaves the timers as they are.
    */
   const commitReps = (input) => {
     const hit = cardOf(input);
@@ -728,15 +901,32 @@ export function renderToday(root, ctx) {
     const i = Number(input.dataset.set);
     const set = hit.entry.sets[i];
     if (!set || !(set.reps > 0)) return;
-    const mark = `${hit.entry.uid}:${i}:${set.reps}`;
-    const rest = usableRest(form.rest);
-    if (ui.committed === mark && rest && rest.uid === hit.entry.uid && rest.set === i) return;
+    const key = `${hit.entry.uid}:${i}`;
+    const mark = `${key}:${set.reps}`;
+    if (ui.committed === mark) return;
     ui.committed = mark;
-    ui.restMovedAt = Date.now();
-    form.rest = { uid: hit.entry.uid, set: i, startedAt: Date.now(), extra: 0 };
+    const fresh = ui.typing.key === key && !(ui.typing.from > 0);
+    ui.typing = { key: '', from: null };
+    if (!fresh) return;
+    const now = Date.now();
+    const running = usableTimer(form.timer, now);
+    if (running && running.kind === 'set' && running.uid === hit.entry.uid && running.set === i) {
+      const took = setTaken(running, now);
+      if (took != null) set.duration = took;
+    }
+    const next = nextAfter(form.entries, formPairs(ctx.state, form), hit.entry.uid, i);
+    form.timer = next.auto
+      ? { kind: 'set', uid: next.auto.uid, set: next.auto.set, startedAt: now }
+      : { kind: 'rest', uid: hit.entry.uid, set: i, startedAt: now, extra: 0 };
+    noteTimer();
+    ui.timerMovedAt = now;
     if (ctx.state.settings.restSound !== false) unlockSound();
     changed();
-    afterTap(() => { if (root.isConnected) { placeRest(); tickRest(); } });
+    afterTap(() => {
+      if (!root.isConnected) return;
+      placeTimers(); // opens the partner's card when its set started by itself
+      if (next.auto) bringIntoView(next.auto.uid);
+    });
   };
 
   root.addEventListener('input', (e) => {
@@ -787,13 +977,10 @@ export function renderToday(root, ctx) {
       const bad = text !== '' && reps == null;
       t.setAttribute('aria-invalid', String(bad));
       ui.bad[bad ? 'add' : 'delete'](`${hit.entry.uid}:r${i}`);
-      // The workout starts with its first reps (§18.3), for a new workout logged on its own date (a workout typed in
-      // later for another day gets no clock times — they would say when it was typed, not when it was done). Reps typed
-      // into one with no start time yet (a draft from before the update, a date changed back to today) or with a start
-      // from an earlier sitting (`liveStart`) start the clock now.
-      const first = reps > 0 && !form.editingId && form.date === ctx.today() && !liveStart(form);
+      const key = `${hit.entry.uid}:${i}`;
+      if (ui.typing.key !== key) ui.typing = { key, from: set.reps }; // what the box held before this typing (commitReps)
       set.reps = reps;
-      if (first) { form.startedAt = nowLocal(); updateTimeline(); }
+      if (reps > 0) startClock(); // the first reps start the workout, unless a Start tap already did (§18.3)
       t.closest('.field').classList.toggle('done', reps > 0);
       if (t.classList.contains('fit')) t.style.setProperty('--len', String(fitLen(t.value || t.placeholder)));
     }
@@ -885,15 +1072,17 @@ export function renderToday(root, ctx) {
           hit.entry.sets.push({ weight: prev ? prev.weight : null, reps: null, touched: Boolean(prev && prev.touched) });
           changed();
           redrawCard(hit.entry);
+          placeTimers(); // a rest box elsewhere may now point at the new set
         }
         break;
       case 'remove-set':
         if (hit && hit.entry.sets.length > 1) {
           hit.entry.sets.pop();
-          // The rest timer of the removed set goes with it (it would stay hidden and still beep).
-          if (form.rest && form.rest.uid === hit.entry.uid && form.rest.set >= hit.entry.sets.length) delete form.rest;
+          // The timer of the removed set goes with it (it would stay hidden, and a rest would still beep).
+          if (form.timer && form.timer.uid === hit.entry.uid && form.timer.set >= hit.entry.sets.length) delete form.timer;
           changed();
           redrawCard(hit.entry);
+          placeTimers();
         }
         break;
       case 'remove-ex':
@@ -906,17 +1095,32 @@ export function renderToday(root, ctx) {
       case 'add-ex': openAddExercise(ctx, form, changed); break;
       case 'save': saveWorkout(ctx, form); break;
       case 'rest-more':
-        if (form.rest && Date.now() - ui.restMovedAt >= REST_TAP_GUARD_MS) {
-          form.rest = { ...form.rest, extra: (form.rest.extra || 0) + REST_MORE_SECONDS };
+        if (form.timer && form.timer.kind === 'rest' && !tooSoon()) {
+          form.timer = { ...form.timer, extra: (form.timer.extra || 0) + REST_MORE_SECONDS };
           changed();
-          tickRest();
+          tickTimers();
         }
         break;
-      case 'rest-skip':
-        if (Date.now() - ui.restMovedAt >= REST_TAP_GUARD_MS) {
-          delete form.rest;
+      case 'rest-skip': // no rest recorded; the next set to do gets its "Start set N" button
+      case 'set-cancel': // no set time recorded; a rest already recorded on the set stays
+        if (form.timer && !tooSoon()) {
+          noteTimer(); // the button carries on from here (also for a timer restored by a reload)
+          delete form.timer;
           changed();
-          placeRest();
+          placeTimers();
+        }
+        break;
+      case 'timer-start': {
+        const timer = usableTimer(form.timer, Date.now());
+        if (!timer || timer.kind !== 'rest' || tooSoon()) break;
+        const { start } = nextAfter(form.entries, formPairs(ctx.state, form), timer.uid, timer.set, { auto: false });
+        if (start) startSet(start.uid, start.set, start.recordsRest ? restTaken(timer, Date.now()) : null); // never on a superset's b (§19.1)
+        break;
+      }
+      case 'row-start':
+        if (hit && !form.editingId && !usableTimer(form.timer, Date.now())) {
+          const target = nextToDo(form.entries, formPairs(ctx.state, form), ui.lastTimer); // the one set showing the button
+          if (target && target.uid === hit.entry.uid) startSet(target.uid, target.set, null);
         }
         break;
       default: break;
@@ -927,7 +1131,7 @@ export function renderToday(root, ctx) {
   tickWhileShown(ctx, root, () => {
     // After midnight an untouched form belongs to the new day (and "Done for today" may be over).
     if (ctx.today() !== today && !ctx.state.draft) { ctx.render(); return; }
-    tickRest();
+    tickTimers();
     if (nowLocal() !== minute) { minute = nowLocal(); updateTimeline(); } // "N min so far"
   });
 }
@@ -940,6 +1144,7 @@ function replaceSlot(state, form, slotKey) {
   const at = form.entries.findIndex((e) => e.slotKey === slotKey);
   if (at < 0 || !fresh.length) return;
   form.entries = [...form.entries.slice(0, at), ...fresh, ...form.entries.slice(at).filter((e) => e.slotKey !== slotKey)];
+  if (form.timer && fresh.some((e) => e.uid === form.timer.uid)) delete form.timer; // its sets started again
   for (const e of fresh) { ui.opened.delete(e.uid); prefill(state, form, e); }
 }
 
@@ -1080,13 +1285,13 @@ function openAddExercise(ctx, form, changed) {
  * The session a form saves: only sets with reps > 0, no empty entries. Times (§18.3): a new workout keeps the time of
  * its first reps and finishes now — if it was started, or is saved, on its own date (one typed in later for another
  * day gets none). A start from an earlier sitting (`liveStart`: a draft left overnight) is kept without a finish: the
- * save time is not when that workout ended. An edited one keeps the times it had. Warm-up ticks and the rest timer
- * stay behind.
+ * save time is not when that workout ended. An edited one keeps the times it had. Each set keeps its recorded rest
+ * and set time (§19.1). Warm-up ticks and the timer stay behind.
  */
 function sessionFrom(form, today) {
   const entries = [];
   for (const e of form.entries) {
-    const sets = e.sets.filter((s) => s.reps > 0).map((s) => ({ weight: s.weight ?? 0, reps: s.reps }));
+    const sets = e.sets.filter((s) => s.reps > 0).map((s) => loggedSet(s.weight ?? 0, s.reps, s));
     if (!sets.length) continue;
     entries.push(isCustom(e.exerciseId) ? { exerciseId: e.exerciseId, name: e.name, sets } : { exerciseId: e.exerciseId, sets });
   }
@@ -1155,7 +1360,9 @@ async function saveWorkout(ctx, form) {
   }
   ui.formId = '';
   ui.savedAt = Date.now();
-  ctx.commit(next, { keepScroll: false });
+  // Storage full: the workout stays in memory (an export still has it) and only "Couldn't save … export a backup now"
+  // shows — never "Saved" or the "Workout saved" sheet for a workout that is not on the phone.
+  if (!ctx.commit(next, { keepScroll: false })) return;
   ctx.afterSave();
   toast(`Saved ${dayName(session.day)} · ${formatDate(session.date)}`);
   if (!form.editingId) showSaved(ctx, session);
@@ -1184,7 +1391,7 @@ export async function editSession(ctx, id) {
   let extras = 0;
   let mainUsed = false;
   const entries = (s.entries || []).map((e) => {
-    const sets = (e.sets || []).map((st) => ({ weight: st.weight, reps: st.reps, touched: true }));
+    const sets = (e.sets || []).map((st) => ({ ...loggedSet(st.weight, st.reps, st), touched: true })); // §19: times kept
     const name = exerciseName(e.exerciseId, e.name);
     if (!mainUsed && e.exerciseId === DAYS[s.day].main) {
       mainUsed = true;

@@ -256,14 +256,40 @@ export function formatDuration(minutes) {
 }
 
 /**
- * Read a clock time typed as "18:42", "8:05" or "18.42" → "18:42"; anything else → null.
+ * Read a wall-clock time typed as "18:42", "8:05" or "18.42" → "18:42"; anything else → null. (Batch 2's
+ * `parseClock`, renamed for §19.1: `parseClock` now reads minutes:seconds.)
  * @param {string} text
  * @returns {string|null}
  */
-export function parseClock(text) {
+export function parseWallClock(text) {
   const m = /^(\d{1,2})[:.](\d{2})$/.exec(String(text ?? '').trim());
   if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
   return `${pad(Number(m[1]))}:${m[2]}`;
+}
+
+// ---------------------------------------------------------------- minutes:seconds (§19.1)
+// Recorded rests and set times, and the timers on Today, are whole seconds shown as "2:41".
+
+/**
+ * Whole seconds as minutes:seconds — "2:41", "0:05", "61:40" (minutes unpadded, seconds two digits). Below 0 or not
+ * a number → "0:00"; fractions are dropped.
+ * @param {number} seconds
+ * @returns {string}
+ */
+export function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(total / 60)}:${pad(total % 60)}`;
+}
+
+/**
+ * Read minutes:seconds ("2:41" → 161, "61:40" → 3700); anything else (no minutes, seconds over 59, extra
+ * characters) → null.
+ * @param {string} text
+ * @returns {number|null}
+ */
+export function parseClock(text) {
+  const m = /^(\d{1,4}):([0-5]\d)$/.exec(String(text ?? '').trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 }
 
 /**
@@ -288,7 +314,7 @@ export function clockAfter(fromLocal, clock) {
 export function parseLocalTime(text, { today = todayISO() } = {}) {
   const m = /^(.+?)(?:T|\s+)(\d{1,2}[:.]\d{2})$/.exec(String(text ?? '').trim());
   if (!m) return null;
-  const clock = parseClock(m[2]);
+  const clock = parseWallClock(m[2]);
   const d = parseDatePrefix(m[1], { today });
   if (!clock || !d || d.invalid || d.rest !== '') return null;
   return `${d.date}T${clock}`;

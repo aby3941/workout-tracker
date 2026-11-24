@@ -84,6 +84,20 @@ try {
   const clockAdvances = await t.evaluate(async () => { const a = Date.now(); await new Promise((r) => setTimeout(r, 120)); return Date.now() - a; });
   check('pinned clock advances normally', clockAdvances >= 100 && clockAdvances < 1000, `${clockAdvances} ms`);
 
+  await t.setClock('2026-11-10T09:00:00', { frozen: true });
+  await t.reload();
+  await t.waitForHeading('Today is 10/11/2026');
+  const frozenNow = await t.evaluate(async () => { const a = Date.now(); await new Promise((r) => setTimeout(r, 150)); return { a, b: Date.now(), h: new Date().getHours() }; });
+  check('frozen clock stands still', frozenNow.a === frozenNow.b && frozenNow.h === 9, JSON.stringify(frozenNow));
+  const moved = await t.advanceClock(161);
+  check('advanceClock moves a frozen clock by exactly N s', moved - frozenNow.a === 161000 && (await t.clockNow()) === moved, `${moved - frozenNow.a} ms`);
+  await t.reload();
+  await t.waitForHeading('Today is 10/11/2026');
+  check('a reload carries on from the advanced (still frozen) time', (await t.clockNow()) === moved);
+  await t.setClock('2026-11-10T09:00');
+  await t.reload();
+  await t.waitForHeading('Today is 10/11/2026');
+
   await t.click('Swap', { within: 'Deadlift' });
   await t.waitForStatus('swapped');
   check('click by accessible name (aria-hidden icon ignored) + status capture', true);

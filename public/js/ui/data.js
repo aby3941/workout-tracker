@@ -1,9 +1,9 @@
-// Data: status, CSV backup (share sheet or download), copy as text, import with preview, units, delete all,
-// and the Add to Home Screen hint.
+// Data: status (with the storage meter, §19.4), CSV backup (share sheet or download), copy as text, import with
+// preview, units, delete all, and the Add to Home Screen hint.
 
 import { toCSV } from '../csv.js';
 import { parseImport, formatText } from '../parser.js';
-import { mergeSessions, convertAllWeights, defaultState, sessionKey } from '../store.js';
+import { mergeSessions, convertAllWeights, defaultState, sessionKey, STORAGE_NEARLY_FULL } from '../store.js';
 import { CONVERSION_STEP, formatWeight, formatNumber, parseWeightInput, isValidBarWeight, barWeight } from '../units.js';
 import { formatDate } from '../dates.js';
 import { exerciseName, isTimed } from '../program.js';
@@ -17,6 +17,21 @@ const ui = { text: '', preview: null, copyText: null };
 /** True when running as an installed Home Screen app. */
 function standalone() {
   return Boolean(navigator.standalone) || (typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches);
+}
+
+/** "0.4 MB" (one decimal), "less than 0.1 MB" below that. */
+function megabytes(chars) {
+  const mb = chars / (1024 * 1024);
+  return mb < 0.1 ? 'less than 0.1 MB' : `${mb.toFixed(1)} MB`;
+}
+
+/**
+ * The storage meter (§19.4): "Storage used: 0.4 MB of about 5 MB", and above 80% an amber warning with its icon.
+ * @param {{used: number, quota: number, ratio: number}} use
+ */
+function storageMarkup(use) {
+  return html`<p class="muted" data-storage>Storage used: ${megabytes(use.used)} of about ${Math.round(use.quota / (1024 * 1024))} MB</p>
+    ${use.ratio > STORAGE_NEARLY_FULL ? html`<p class="storage-warn">${icon('warn')}<span>Storage nearly full — export a backup, then delete old workouts.</span></p>` : ''}`;
 }
 
 /** "ppl-backup-10-11-2026.csv" */
@@ -124,6 +139,7 @@ export function renderData(root, ctx) {
     <div class="card status">
       <p><b>Saved on this phone only</b></p>
       <p class="muted">${plural(state.sessions.length, 'workout')} · ${lastText}</p>
+      ${storageMarkup(ctx.storageUse())}
     </div>
 
     <div class="card">

@@ -1,4 +1,4 @@
-// End-to-end scenarios for the PPL Tracker PWA, written from SPEC.md (§3, §5, §11, §12, §14–§18).
+// End-to-end scenarios for the PPL Tracker PWA, written from SPEC.md (§3, §5, §11, §12, §14–§19).
 // Elements are found only by role + accessible name from §16.3 (plus the one class it names,
 // `suggest-headline`). Expected numbers come from the spec's own logic modules where useful.
 
@@ -549,6 +549,8 @@ const cardCount = (t) => t.evaluate(() => document.querySelectorAll('section[ari
 const DONE = 'Done for today ✓'; // "Done for today ✓" (§18.4)
 const SAVED = { role: 'dialog', name: 'Workout saved' }; // §18.5
 const TIMER = { role: 'timer', name: 'Rest timer' }; // §18.1
+/** The stored rest timer: Batch 2's draft.rest became draft.timer = { kind: 'rest', uid, set, startedAt, extra } (§19.1). */
+const draftRest = (st) => (st?.draft?.timer?.kind === 'rest' ? st.draft.timer : null);
 const hm = (local) => local.slice(11, 16); // "2026-11-10T09:25" → "09:25"
 const clockMinutes = (local) => Number(local.slice(11, 13)) * 60 + Number(local.slice(14, 16));
 /** Workout times by date|day, for comparing before / after a round trip. */
@@ -723,6 +725,171 @@ const switchState = (t, name) => t.evaluate((lib, n) => {
   if (!el) return null;
   return el.tagName === 'INPUT' ? el.checked : el.getAttribute('aria-checked') === 'true';
 }, name);
+
+// ---------------------------------------------------------------------------------------------
+// Batch 3 helpers (§19: recorded rest, set timer, supersets as one, storage meter)
+// ---------------------------------------------------------------------------------------------
+
+const SET_TIMER = { role: 'timer', name: 'Set timer' }; // §19.2
+/** A set with an optional recorded rest / set time in whole seconds (§19.1). */
+const ts = (weight, reps, rest, duration) => ({ weight, reps, ...(rest != null ? { rest } : {}), ...(duration != null ? { duration } : {}) });
+/** The n-th (0-based) entry of an exercise in a draft or a session. */
+const entryOf = (holder, exerciseId, occ = 0) => (holder?.entries || []).filter((e) => e.exerciseId === exerciseId)[occ] || null;
+/** [[rest, duration], …] per set of an entry (null = not recorded). */
+const timingOf = (e) => (e?.sets || []).map((x) => [x.rest ?? null, x.duration ?? null]);
+/** Recorded rest / set times of every workout, by date|day, for comparing before / after a round trip. */
+const timersByKey = (list) => Object.fromEntries((list || []).map((s) => [`${s.date}|${s.day}`, (s.entries || []).map((e) => [e.exerciseId, timingOf(e)])]));
+const savedSession = (st, date, day) => (st?.sessions || []).find((s) => s.date === date && s.day === day) || null;
+
+/** Fresh profile with a stored state and a frozen clock (it moves only with t.advanceClock), then open the app. */
+async function bootFrozen(t, state, { date = D0, time = '09:00' } = {}) {
+  await t.setClock(`${date}T${time}:00`, { frozen: true });
+  t.step(`Seed storage (clock frozen at ${dmy(date)} ${time})`);
+  await t.goto(BLANK_PATH);
+  await t.setStorage(STORAGE_KEY, JSON.stringify(state));
+  await openApp(t);
+}
+
+/** Move the frozen clock forward by exactly `seconds` (no reload; a later reload carries on from here). */
+async function advance(t, seconds) {
+  t.step(`Clock +${seconds} s`);
+  await t.advanceClock(seconds);
+  await sleep(60);
+}
+
+async function reloadApp(t) {
+  t.step('Reload');
+  await t.reload();
+  await waitNav(t);
+}
+
+/** Type reps into "Set n reps" of a card and commit them with Enter (§18.1 / §19.2). */
+async function commitReps(t, within, n, value) {
+  t.step(`Commit ${JSON.stringify(within.name)}${within.index ? ` #${within.index + 1}` : ''} set ${n} reps = ${value}`);
+  await typeNoCommit(t, `Set ${n} reps`, value, within);
+  await t.press('Enter');
+  await sleep(200);
+}
+
+/** Every Rest / Set timer on the page: its name, its card (label + index among cards with that label), the set row it sits under, its text. */
+const timersNow = (t) => t.evaluate((lib) => {
+  const out = [];
+  for (const name of ['Rest timer', 'Set timer']) {
+    for (const tm of lib.findAll({ role: 'timer', name, within: 'document' })) {
+      const sec = tm.closest('section[aria-label]');
+      const label = sec ? sec.getAttribute('aria-label') : null;
+      const index = label ? [...document.querySelectorAll('section[aria-label]')].filter((x) => x.getAttribute('aria-label') === label).indexOf(sec) : -1;
+      let after = null;
+      for (const inp of sec ? [...sec.querySelectorAll('input')] : []) {
+        const m = /^Set (\d+) reps$/.exec(lib.accName(inp));
+        if (m && (inp.compareDocumentPosition(tm) & Node.DOCUMENT_POSITION_FOLLOWING)) after = Number(m[1]);
+      }
+      out.push({ name, card: label, index, after, text: lib.norm(tm.innerText) });
+    }
+  }
+  return out;
+});
+
+/**
+ * Wait until the only timer on the page (§19.2: one timer at a time) is `name` ("Rest timer" / "Set timer") inside
+ * the `index`-th card named `cardName`, right under set `after`, and (when given) its text contains `text`.
+ */
+async function waitOnlyTimer(t, name, cardName, after, what, { index = 0, text } = {}) {
+  const deadline = Date.now() + 6000;
+  let list;
+  for (;;) {
+    list = await timersNow(t);
+    const one = list.length === 1 ? list[0] : null;
+    if (one && one.name === name && one.card === cardName && one.index === index && one.after === after && (!text || one.text.includes(text))) return one;
+    if (Date.now() > deadline) {
+      throw new E2EError(`${what}: expected the only timer to be "${name}" in "${cardName}"${index ? ` #${index + 1}` : ''} under set ${after}${text ? ` reading ${JSON.stringify(text)}` : ''}; got ${JSON.stringify(list)}\n${await t.describe()}`);
+    }
+    await sleep(100);
+  }
+}
+
+/** No rest box anywhere (checked after `settle` ms, so one that slides in late is caught too). */
+async function expectNoRestBox(t, what, settle = 700) {
+  await sleep(settle);
+  expectEqual(await t.count('timer', 'Rest timer', { within: 'document' }), 0, `${what}: rest boxes`);
+}
+
+/** No Rest / Set timer anywhere (checked after `settle` ms, so a late one is caught too). */
+async function expectNoTimer(t, what, settle = 700) {
+  await sleep(settle);
+  const list = await timersNow(t);
+  expect(list.length === 0, `${what}: expected no Rest / Set timer; got ${JSON.stringify(list)}`);
+}
+
+/**
+ * The muted "set 0:38" / "rest 2:41 · set 0:38" lines of a Today card (§19.2), keyed by the set row they sit under.
+ * A line may say more after that (the mock's "· then straight to Lateral raise").
+ */
+const setMetas = (t, within) => t.evaluate((lib, w) => {
+  const sec = lib.scope(w);
+  if (!sec) return null;
+  const re = /^(rest \d+:\d\d · )?set \d+:\d\d/;
+  const inputs = [...sec.querySelectorAll('input')].map((inp) => [inp, /^Set (\d+) reps$/.exec(lib.accName(inp))]).filter(([, m]) => m);
+  // The outermost element whose text starts like a muted line (its inner spans may match too: "set 0:40" inside "rest 2:41 · set 0:40").
+  const hits = [...sec.querySelectorAll('*')].filter((el) => lib.visible(el) && re.test(lib.norm(el.innerText))
+    && !(el.parentElement && el.parentElement !== sec && re.test(lib.norm(el.parentElement.innerText))));
+  const out = {};
+  for (const el of hits) {
+    let after = null;
+    for (const [inp, m] of inputs) if (inp.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) after = Number(m[1]);
+    out[after] = lib.norm(el.innerText);
+  }
+  return out;
+}, within);
+
+async function waitMeta(t, within, n, prefix, what) {
+  const deadline = Date.now() + 6000;
+  let metas;
+  for (;;) {
+    metas = await setMetas(t, within);
+    if (metas && typeof metas[n] === 'string' && metas[n].startsWith(prefix)) return metas;
+    if (Date.now() > deadline) throw new E2EError(`${what}: expected a muted line starting ${JSON.stringify(prefix)} under set ${n}; lines by set: ${JSON.stringify(metas)}`);
+    await sleep(100);
+  }
+}
+
+/** The card at `within` is on screen: fully, or filling the screen when it is taller (§19.2 "scrolls into view"). */
+async function expectInView(t, within, what) {
+  await t.poll((lib, w) => {
+    const sec = lib.scope(w);
+    if (!sec) return { pending: true, why: 'card not visible' };
+    const r = sec.getBoundingClientRect();
+    const ok = r.height <= innerHeight ? r.top >= -1 && r.bottom <= innerHeight + 1 : r.top <= 1 && r.bottom >= innerHeight - 1;
+    return ok ? { ok: true } : { pending: true, why: `card spans ${Math.round(r.top)}–${Math.round(r.bottom)}px of a ${innerHeight}px screen` };
+  }, [within], { timeout: 4000, what });
+}
+
+/** Any timer start button (§19.2): "Start set N", "Start round N · …", "Start next exercise". */
+const START_ANY = /^Start (set \d+|round \d+ · .+|next exercise)$/;
+
+/** Logged workouts with recorded rests and set times (History / backup scenarios). Positions: Day 1, 2, 3. */
+const PULL_PLAIN = (date) => ({ date, day: 'pullA', entries: [mainEntry('deadlift', 100, [5])] });
+const PUSH_TIMED = (date) => ({
+  date, day: 'pushA', startedAt: `${date}T18:00`, finishedAt: `${date}T19:00`,
+  entries: [
+    { exerciseId: 'bench', sets: sets(62.5, 5, 5, 5, 5, 5) },
+    { exerciseId: 'ohp', sets: sets(30, 10, 10, 10) },
+    { exerciseId: 'inclineDbPress', sets: sets(20, 10, 10, 10) },
+    { exerciseId: 'tricepsPushdown', sets: [ts(25, 12, 120, 31), ts(25, 11, 65, 29), ts(25, 10, 85, 33)] },
+    { exerciseId: 'lateralRaise', sets: [ts(8, 16, null, 42), ts(8, 15, null, 40), ts(8, 15, null, 41)] },
+    { exerciseId: 'ohTricepsExt', sets: [ts(15, 12, 100, 30), ts(15, 12, 110, 31), ts(15, 9, 120, 32)] },
+    { exerciseId: 'lateralRaise', sets: [ts(6, 20, null, 35), ts(6, 20, null, 36), ts(6, 18, null, 37)] },
+  ],
+}); // rests 120, 65, 85, 100, 110, 120 → avg 100 s = 1:40
+const LEGS_TIMED = (date) => ({
+  date, day: 'legs', startedAt: `${date}T18:42`, finishedAt: `${date}T19:34`,
+  entries: [
+    { exerciseId: 'squat', sets: [ts(82.5, 5, null, 38), ts(82.5, 5, 161, 40), ts(82.5, 7, 185, 52)] },
+    { exerciseId: 'rdl', sets: [ts(55, 12, null, 45), ts(55, 11, null, 44), ts(55, 11, null, 47)] },
+    { exerciseId: 'legPress', sets: [ts(110, 10, 125, 40), ts(110, 10), ts(110, 9, 141, 42)] },
+    { exerciseId: 'legCurl', sets: sets(40, 12, 12, 12) },
+  ],
+}); // rests 161, 185, 125, 141 → avg 153 s = 2:33
 
 // ---------------------------------------------------------------------------------------------
 // Scenarios
@@ -2340,11 +2507,12 @@ export const scenarios = [
         `The timer should read like "Rest 0:05 · aim 3–5 min" (counting up, main-lift range); got ${JSON.stringify(place.text)}`);
       await t.waitForRole('button', '+30 s', { within: TIMER });
       await t.waitForRole('button', 'Skip', { within: TIMER });
-      let st = await waitStored(t, 'draft.rest = { uid, set, startedAt, extra }', (s) => typeof s.draft?.rest?.startedAt === 'number');
+      // §19.1 (24/11/2026): Batch 2's draft.rest is now draft.timer = { kind: 'rest', uid, set, startedAt, extra }.
+      let st = await waitStored(t, 'draft.timer = { kind: "rest", uid, set, startedAt, extra }', (s) => typeof draftRest(s)?.startedAt === 'number');
       const squatUid = st.draft.entries?.find((e) => e.exerciseId === 'squat')?.uid;
-      expectEqual(st.draft.rest.uid, squatUid, 'draft.rest.uid is the Squat card');
-      expectEqual(st.draft.rest.extra ?? 0, 0, 'draft.rest.extra starts at 0');
-      const start1 = st.draft.rest.startedAt;
+      expectEqual(draftRest(st).uid, squatUid, 'draft.timer.uid is the Squat card');
+      expectEqual(draftRest(st).extra ?? 0, 0, 'draft.timer.extra starts at 0');
+      const start1 = draftRest(st).startedAt;
 
       t.step('A tab switch keeps it');
       await goTab(t, 'Plan');
@@ -2357,7 +2525,7 @@ export const scenarios = [
 
       t.step('+30 s pushes the target past now');
       await t.tap('+30 s', { within: TIMER });
-      await waitStored(t, 'draft.rest.extra = 30', (s) => s.draft?.rest?.extra === 30);
+      await waitStored(t, 'draft.timer.extra = 30', (s) => draftRest(s)?.extra === 30);
       await waitNoText(t, 'Ready — go when you are', card('Squat'), 'the timer to be resting again after +30 s (target 3:30)');
 
       await jumpTo(t, start1 + 345000, 'past 5 min + 30 s');
@@ -2369,9 +2537,9 @@ export const scenarios = [
       await t.press('Enter');
       place = await waitTimerAt(t, 'Squat', 2, 3, 'After Enter on Squat set 2');
       expect(/Rest 0:0\d/.test(place.text) && !/Over|Ready/.test(place.text), `A new set restarts the timer from 0:00; got ${JSON.stringify(place.text)}`);
-      st = await waitStored(t, 'draft.rest restarted for set 2', (s) => s.draft?.rest?.startedAt >= start1 + 340000);
-      expectEqual(st.draft.rest.uid, squatUid, 'draft.rest.uid is still the Squat card');
-      expectEqual(st.draft.rest.extra ?? 0, 0, 'A restarted timer has no extra time');
+      st = await waitStored(t, 'draft.timer restarted for set 2', (s) => draftRest(s)?.startedAt >= start1 + 340000);
+      expectEqual(draftRest(st).uid, squatUid, 'draft.timer.uid is still the Squat card');
+      expectEqual(draftRest(st).extra ?? 0, 0, 'A restarted timer has no extra time');
 
       t.step('Committing on another card moves it there (only one timer)');
       await openCard(t, 'Romanian deadlift');
@@ -2380,9 +2548,9 @@ export const scenarios = [
       place = await waitTimerAt(t, 'Romanian deadlift', 1, 2, 'After Enter on Romanian deadlift set 1');
       expect(place.text.includes('aim 1–3 min'), `Accessory range on the Romanian deadlift timer; got ${JSON.stringify(place.text)}`);
       expectEqual(await t.count('timer', 'Rest timer', { within: card('Squat') }), 0, 'Rest timers left in the Squat card');
-      st = await waitStored(t, 'draft.rest on the Romanian deadlift card', (s) => s.draft?.rest?.uid && s.draft.rest.uid !== squatUid);
-      expectEqual(st.draft.rest.uid, st.draft.entries?.find((e) => e.exerciseId === 'rdl')?.uid, 'draft.rest.uid is the Romanian deadlift card');
-      const start2 = st.draft.rest.startedAt;
+      st = await waitStored(t, 'draft.timer on the Romanian deadlift card', (s) => draftRest(s)?.uid && draftRest(s).uid !== squatUid);
+      expectEqual(draftRest(st).uid, st.draft.entries?.find((e) => e.exerciseId === 'rdl')?.uid, 'draft.timer.uid is the Romanian deadlift card');
+      const start2 = draftRest(st).startedAt;
 
       await jumpTo(t, start2 + 65000, '65 s after the accessory set');
       await waitTimerAt(t, 'Romanian deadlift', 1, 2, 'Accessory timer after a reload');
@@ -2393,7 +2561,7 @@ export const scenarios = [
       t.step('Skip removes it');
       await t.tap('Skip', { within: TIMER });
       await t.waitGone('timer', 'Rest timer', { within: 'document' });
-      await waitStored(t, 'draft.rest cleared by Skip', (s) => !!s.draft && !s.draft.rest);
+      await waitStored(t, 'draft.timer cleared by Skip', (s) => !!s.draft && !s.draft.timer && !s.draft.rest);
       await t.reload();
       await waitNav(t);
       await openCard(t, 'Romanian deadlift');
@@ -2855,7 +3023,8 @@ export const scenarios = [
       await t.press('Enter');
       await sleep(800);
       expectEqual(await t.count('timer', 'Rest timer', { within: 'document' }), 0, 'Rest timers while editing a saved workout');
-      expect(!(await t.getJSON(STORAGE_KEY))?.draft?.rest, 'No draft.rest while editing a saved workout');
+      const editDraft = (await t.getJSON(STORAGE_KEY))?.draft;
+      expect(!editDraft?.timer && !editDraft?.rest, 'No draft.timer while editing a saved workout'); // §19.1: draft.rest → draft.timer
 
       t.step('A new workout still starts the timer');
       await t.click('Cancel edit', { within: 'document' });
@@ -2936,10 +3105,10 @@ export const scenarios = [
       await typeNoCommit(t, 'Set 3 reps', 10, { name: 'Romanian deadlift' });
       await t.press('Enter');
       await waitTimerAt(t, 'Romanian deadlift', 3, null, 'After Enter on set 3');
-      await waitStored(t, 'draft.rest under set 3', (s) => s.draft?.rest?.set === 2);
+      await waitStored(t, 'draft.timer (rest) under set 3', (s) => draftRest(s)?.set === 2); // §19.1: draft.rest → draft.timer
       await t.click('− Set', { within: card('Romanian deadlift') });
       await t.waitGone('timer', 'Rest timer', { within: 'document' });
-      await waitStored(t, 'draft.rest cleared with its set', (s) => !!s.draft && !s.draft.rest);
+      await waitStored(t, 'draft.timer cleared with its set', (s) => !!s.draft && !s.draft.timer && !s.draft.rest);
 
       t.step('A timer under another set stays');
       await typeNoCommit(t, 'Set 1 reps', 10, { name: 'Romanian deadlift' });
@@ -2948,6 +3117,638 @@ export const scenarios = [
       await t.click('− Set', { within: card('Romanian deadlift') });
       await sleep(300);
       await waitTimerAt(t, 'Romanian deadlift', 1, null, 'After removing set 2');
+    },
+  },
+  // ------------------------------------------------------------------ Batch 3 (§19, owner approved 24/11/2026)
+
+  {
+    id: 'b3-rest-and-set-timer',
+    title: 'Recorded rest + set timer (§19.2), Squat: row "Start set 1" → "Set 1 · 0:00"; commit → rest box "Start set 2"; +161 s → tap → "Set 2 · …"; +40 s → commit → rest 161 / set 40 stored, "rest 2:41 · set 0:40"; last set → "Start next exercise" records Romanian deadlift\'s set-1 rest and opens it in view; "Avg rest" tile',
+    timeout: 150000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+
+      t.step('No timer yet: the first set of the workout has a "Start set 1" button');
+      await t.waitForRole('button', 'Start set 1', { within: SQ });
+      expectEqual(await t.count('button', /^Start set \d+$/, { within: 'document' }), 1, '"Start set N" buttons on the page before anything runs');
+      expectEqual((await timersNow(t)).length, 0, 'Timers before any Start');
+
+      await t.tap('Start set 1', { within: SQ });
+      let tm = await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After "Start set 1"', { text: `Set 1 ${DOT} 0:00` });
+      expect(!tm.text.includes('rest before it'), `The row button records no rest; the set timer says ${JSON.stringify(tm.text)}`);
+      await t.waitForRole('button', 'Cancel', { within: SET_TIMER });
+      let st = await waitStored(t, 'draft.timer = { kind: "set", uid, set: 0, startedAt }', (s) => s.draft?.timer?.kind === 'set' && s.draft.timer.set === 0);
+      expectEqual(st.draft.timer.uid, entryOf(st.draft, 'squat').uid, 'draft.timer.uid is the Squat card');
+      expect(typeof st.draft.timer.startedAt === 'number', `draft.timer.startedAt is a time in ms: ${JSON.stringify(st.draft.timer)}`);
+
+      await advance(t, 38);
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, '38 s into set 1', { text: `Set 1 ${DOT} 0:38` });
+      await commitReps(t, SQ, 1, 5);
+      t.step('Set 1 committed: duration 38 s, a rest box under set 1 with "Start set 2", +30 s, Skip');
+      tm = await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, 'After committing set 1');
+      expect(tm.text.includes('aim 3–5 min'), `The rest box keeps the Batch 2 look ("Rest 0:00 · aim 3–5 min"); got ${JSON.stringify(tm.text)}`);
+      await t.waitForRole('button', 'Start set 2', { within: TIMER });
+      await t.waitForRole('button', '+30 s', { within: TIMER });
+      await t.waitForRole('button', 'Skip', { within: TIMER });
+      expectEqual(await t.count('button', 'Start set 2', { within: 'document' }), 1, '"Start set 2" buttons (only the rest box\'s while a timer runs)');
+      st = await waitStored(t, 'set 1 duration 38 and a rest timer', (s) => draftRest(s) && entryOf(s.draft, 'squat')?.sets?.[0]?.duration === 38);
+      expectEqual(timingOf(entryOf(st.draft, 'squat'))[0], [null, 38], 'Squat set 1 [rest, duration]');
+      await waitMeta(t, SQ, 1, 'set 0:38', 'Under committed set 1');
+
+      await advance(t, 161);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, '161 s of rest', { text: 'Rest 2:41' });
+      await t.tap('Start set 2', { within: TIMER });
+      t.step('"Start set 2": the rest is saved on set 2, its set timer starts');
+      tm = await waitOnlyTimer(t, 'Set timer', 'Squat', 2, 'After "Start set 2"', { text: `Set 2 ${DOT} 0:00` });
+      expect(tm.text.includes('rest before it 2:41'), `The set timer should add "rest before it 2:41"; got ${JSON.stringify(tm.text)}`);
+      await waitStored(t, 'rest 161 on set 2 and a set timer on set 2', (s) => entryOf(s.draft, 'squat')?.sets?.[1]?.rest === 161 && s.draft.timer?.kind === 'set' && s.draft.timer.set === 1);
+
+      await advance(t, 40);
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 2, '40 s into set 2', { text: `Set 2 ${DOT} 0:40` });
+      await commitReps(t, SQ, 2, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 2, 'After committing set 2');
+      await t.waitForRole('button', 'Start set 3', { within: TIMER });
+      st = await waitStored(t, 'set 2 duration 40', (s) => entryOf(s.draft, 'squat')?.sets?.[1]?.duration === 40);
+      expectEqual(timingOf(entryOf(st.draft, 'squat')).slice(0, 2), [[null, 38], [161, 40]], 'Squat sets 1–2 [rest, duration]');
+      await waitMeta(t, SQ, 2, `rest 2:41 ${DOT} set 0:40`, 'Under committed set 2');
+      await waitMeta(t, SQ, 1, 'set 0:38', 'Under committed set 1 (still)');
+
+      await advance(t, 170);
+      await t.tap('Start set 3', { within: TIMER });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 3, 'After "Start set 3"', { text: 'rest before it 2:50' });
+      await advance(t, 45);
+      await commitReps(t, SQ, 3, 7);
+      t.step('The last Squat set: the rest box offers "Start next exercise"');
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 3, 'After the last Squat set');
+      await t.waitForRole('button', 'Start next exercise', { within: TIMER });
+      expect(!(await t.exists('button', /^Start (set|round) /, { within: TIMER })), 'No "Start set / round" after the last set of a plain exercise');
+      await waitMeta(t, SQ, 3, `rest 2:50 ${DOT} set 0:45`, 'Under committed set 3');
+
+      await advance(t, 125);
+      await t.tap('Start next exercise', { within: TIMER });
+      t.step('"Start next exercise": the rest goes on Romanian deadlift set 1; that card opens, in view, with its set timer');
+      const RDL = card('Romanian deadlift');
+      tm = await waitOnlyTimer(t, 'Set timer', 'Romanian deadlift', 1, 'After "Start next exercise"', { text: `Set 1 ${DOT} 0:00` });
+      expect(tm.text.includes('rest before it 2:05'), `The set timer should add "rest before it 2:05"; got ${JSON.stringify(tm.text)}`);
+      expect(await t.fieldVisible('Set 1 reps', { within: RDL }), 'The Romanian deadlift card is open');
+      await expectInView(t, RDL, 'the Romanian deadlift card to be scrolled into view');
+      st = await waitStored(t, 'rest 125 on Romanian deadlift set 1', (s) => entryOf(s.draft, 'rdl')?.sets?.[0]?.rest === 125);
+      expectEqual(timingOf(entryOf(st.draft, 'squat')), [[null, 38], [161, 40], [170, 45]], 'Squat [rest, duration] per set');
+
+      await advance(t, 30);
+      await t.type('Set 1 weight', 40, { within: RDL });
+      await commitReps(t, RDL, 1, 10);
+      await waitOnlyTimer(t, 'Rest timer', 'Romanian deadlift', 1, 'After committing Romanian deadlift set 1');
+
+      t.step('Save: the workout keeps the times; "Workout saved" has an "Avg rest" tile (161, 170, 125 → 2:32)');
+      await t.click('Save workout', { within: 'document' });
+      await t.waitForRole('dialog', SAVED.name, { timeout: 8000 });
+      await t.waitForText(/Avg rest\s*2:32|2:32\s*Avg rest/i, { within: SAVED });
+      await t.click('Nice', { within: SAVED });
+      await t.waitGone('dialog', SAVED.name);
+      st = await t.getJSON(STORAGE_KEY);
+      const saved = savedSession(st, D0, 'legs');
+      expectEqual(entryOf(saved, 'squat')?.sets?.map((x) => x.reps), [5, 5, 7], 'Saved Squat reps');
+      expectEqual(timingOf(entryOf(saved, 'squat')), [[null, 38], [161, 40], [170, 45]], 'Saved Squat [rest, duration] per set');
+      expectEqual(timingOf(entryOf(saved, 'rdl')), [[125, 30]], 'Saved Romanian deadlift [rest, duration]');
+      expect(!st.draft || !st.draft.timer, `Save clears the timer: ${JSON.stringify(st.draft && st.draft.timer)}`);
+    },
+  },
+
+  {
+    id: 'b3-superset-round',
+    title: 'Supersets as one (§19.1–19.2), Push A: pushdown set 1 → Lateral raise set 1\'s set timer starts by itself (no rest box, card opens in view); Lateral raise set 1 → one rest box "Start round 2 · Triceps pushdown"; tapping it records the rest on pushdown set 2; lateral raise sets never carry a rest',
+    timeout: 150000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState([PULL_PLAIN('2026-11-09')]));
+      await expectToday(t, 2, 'Push A');
+      const PD = card('Triceps pushdown');
+      const LR = nthCard('Lateral raise', 0);
+      await openCard(t, 'Triceps pushdown');
+      await t.type('Set 1 weight', 25, { within: PD });
+      await commitReps(t, PD, 1, 12);
+
+      t.step('Pushdown set 1 → Lateral raise set 1 starts by itself, no rest in between');
+      let tm = await waitOnlyTimer(t, 'Set timer', 'Lateral raise', 1, 'After committing pushdown set 1', { text: `Set 1 ${DOT} 0:00` });
+      expect(!tm.text.includes('rest before it'), `No rest inside a superset round; the set timer says ${JSON.stringify(tm.text)}`);
+      await expectNoRestBox(t, 'After committing pushdown set 1');
+      expect(await t.fieldVisible('Set 1 reps', { within: LR }), 'The Lateral raise card opened');
+      await expectInView(t, LR, 'the Lateral raise card to be scrolled into view');
+      await waitStored(t, 'draft.timer = the set timer of Lateral raise #1 set 1', (s) => s.draft?.timer?.kind === 'set' && s.draft.timer.set === 0
+        && s.draft.timer.uid === entryOf(s.draft, 'lateralRaise', 0)?.uid);
+
+      await advance(t, 42);
+      await t.type('Set 1 weight', 8, { within: LR });
+      await commitReps(t, LR, 1, 16);
+      t.step('Lateral raise set 1 → one rest box for the pair: "Start round 2 · Triceps pushdown"');
+      tm = await waitOnlyTimer(t, 'Rest timer', 'Lateral raise', 1, 'After committing Lateral raise set 1');
+      expect(tm.text.includes('aim 1–3 min'), `The round rest uses the accessory range; got ${JSON.stringify(tm.text)}`);
+      await t.waitForRole('button', `Start round 2 ${DOT} Triceps pushdown`, { within: TIMER });
+      expect(!(await t.exists('button', /^Start set \d+$/, { within: 'document' })), 'No "Start set N" while the round rest runs');
+      await waitStored(t, 'Lateral raise set 1 duration 42', (s) => entryOf(s.draft, 'lateralRaise', 0)?.sets?.[0]?.duration === 42);
+
+      await advance(t, 65);
+      await t.tap(`Start round 2 ${DOT} Triceps pushdown`, { within: TIMER });
+      t.step('Round 2 starts on pushdown set 2 with the rest recorded there');
+      tm = await waitOnlyTimer(t, 'Set timer', 'Triceps pushdown', 2, 'After "Start round 2"', { text: `Set 2 ${DOT} 0:00` });
+      expect(tm.text.includes('rest before it 1:05'), `The set timer should add "rest before it 1:05"; got ${JSON.stringify(tm.text)}`);
+      await expectInView(t, PD, 'the Triceps pushdown card to be scrolled into view');
+      await waitStored(t, 'the round rest (65 s) on pushdown set 2', (s) => entryOf(s.draft, 'tricepsPushdown')?.sets?.[1]?.rest === 65);
+
+      await advance(t, 31);
+      await commitReps(t, PD, 2, 11);
+      await waitOnlyTimer(t, 'Set timer', 'Lateral raise', 2, 'Pushdown set 2 → Lateral raise set 2 by itself', { text: `Set 2 ${DOT} 0:00` });
+      await expectNoRestBox(t, 'After committing pushdown set 2');
+      await advance(t, 40);
+      await commitReps(t, LR, 2, 15);
+      await waitOnlyTimer(t, 'Rest timer', 'Lateral raise', 2, 'After committing Lateral raise set 2');
+      await t.waitForRole('button', `Start round 3 ${DOT} Triceps pushdown`, { within: TIMER });
+
+      let st = await waitStored(t, 'Lateral raise set 2 duration 40', (s) => entryOf(s.draft, 'lateralRaise', 0)?.sets?.[1]?.duration === 40);
+      expectEqual(timingOf(entryOf(st.draft, 'tricepsPushdown')).slice(0, 2), [[null, null], [65, 31]], 'Pushdown [rest, duration], sets 1–2');
+      expectEqual(timingOf(entryOf(st.draft, 'lateralRaise', 0)).slice(0, 2), [[null, 42], [null, 40]], 'Lateral raise #1 [rest, duration], sets 1–2');
+
+      t.step('Save: the same values are stored; no lateral raise set has a rest');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      st = await t.getJSON(STORAGE_KEY);
+      const saved = savedSession(st, D0, 'pushA');
+      expectEqual(timingOf(entryOf(saved, 'tricepsPushdown')), [[null, null], [65, 31]], 'Saved pushdown [rest, duration]');
+      expectEqual(timingOf(entryOf(saved, 'lateralRaise', 0)), [[null, 42], [null, 40]], 'Saved Lateral raise #1 [rest, duration]');
+      const lateralRests = (saved?.entries || []).filter((e) => e.exerciseId === 'lateralRaise').flatMap((e) => e.sets).filter((x) => x.rest != null);
+      expectEqual(lateralRests, [], 'Lateral raise sets carrying a rest (superset b never does)');
+    },
+  },
+
+  {
+    id: 'b3-no-start-tapped',
+    title: 'No Start tapped (§19.2): committing the next set while resting stores no rest and no set time for it, and restarts the rest timer under it',
+    timeout: 90000,
+    async run(t) {
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 1, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, 'After committing set 1 without Start');
+      let st = await waitStored(t, 'a rest timer after set 1', (s) => !!draftRest(s));
+      expectEqual(timingOf(entryOf(st.draft, 'squat'))[0], [null, null], 'Set 1 committed without a set timer');
+
+      await advance(t, 100);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, '100 s later', { text: 'Rest 1:40' });
+      t.step('Commit set 2 without tapping "Start set 2"');
+      await commitReps(t, SQ, 2, 5);
+      const now = await t.clockNow();
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 2, 'A new rest timer under set 2', { text: 'Rest 0:00' });
+      st = await waitStored(t, 'the rest timer restarted under set 2', (s) => draftRest(s)?.set === 1 && entryOf(s.draft, 'squat')?.sets?.[1]?.reps === 5);
+      expectEqual(draftRest(st).startedAt, now, 'The new rest timer starts at the commit');
+      expectEqual(timingOf(entryOf(st.draft, 'squat')).slice(0, 2), [[null, null], [null, null]], 'Squat sets 1–2 [rest, duration]');
+
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      const saved = savedSession(await t.getJSON(STORAGE_KEY), D0, 'legs');
+      expectEqual(timingOf(entryOf(saved, 'squat')), [[null, null], [null, null]], 'Saved Squat [rest, duration]');
+    },
+  },
+
+  {
+    id: 'b3-skip-cancel',
+    title: 'Skip and Cancel (§19.2): after Skip the next set shows "Start set N"; Cancel stops the set timer and records no set time, a rest already recorded stays',
+    timeout: 120000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 1, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, 'After committing set 1');
+      await advance(t, 5);
+      await t.tap('Skip', { within: TIMER });
+      await t.waitGone('timer', 'Rest timer', { within: 'document' });
+      await waitStored(t, 'no draft.timer after Skip', (s) => !!s.draft && !s.draft.timer);
+      await expectNoTimer(t, 'After Skip');
+
+      t.step('After Skip: the next set to do shows "Start set 2"');
+      await t.waitForRole('button', 'Start set 2', { within: SQ });
+      await advance(t, 2);
+      await t.tap('Start set 2', { within: SQ });
+      let tm = await waitOnlyTimer(t, 'Set timer', 'Squat', 2, 'After the row button "Start set 2"', { text: `Set 2 ${DOT} 0:00` });
+      expect(!tm.text.includes('rest before it'), `The row button records no rest; the set timer says ${JSON.stringify(tm.text)}`);
+
+      await advance(t, 20);
+      t.step('Cancel: no set time recorded');
+      await t.tap('Cancel', { within: SET_TIMER });
+      await t.waitGone('timer', 'Set timer', { within: 'document' });
+      let st = await waitStored(t, 'no draft.timer after Cancel', (s) => !!s.draft && !s.draft.timer);
+      expectEqual(timingOf(entryOf(st.draft, 'squat')).slice(0, 2), [[null, null], [null, null]], 'Squat sets 1–2 after Cancel');
+      await t.waitForRole('button', 'Start set 2', { within: SQ });
+      await commitReps(t, SQ, 2, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 2, 'After committing set 2');
+      await t.waitForRole('button', 'Start set 3', { within: TIMER });
+      st = await waitStored(t, 'set 2 committed', (s) => entryOf(s.draft, 'squat')?.sets?.[1]?.reps === 5);
+      expectEqual(timingOf(entryOf(st.draft, 'squat'))[1], [null, null], 'Set 2 after a cancelled set timer');
+
+      t.step('Cancel after a recorded rest: the rest stays');
+      await advance(t, 90);
+      await t.tap('Start set 3', { within: TIMER });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 3, 'After "Start set 3"', { text: 'rest before it 1:30' });
+      await waitStored(t, 'rest 90 on set 3', (s) => entryOf(s.draft, 'squat')?.sets?.[2]?.rest === 90);
+      await advance(t, 10);
+      await t.tap('Cancel', { within: SET_TIMER });
+      await t.waitGone('timer', 'Set timer', { within: 'document' });
+      await t.waitForRole('button', 'Start set 3', { within: SQ });
+      await commitReps(t, SQ, 3, 7);
+      st = await waitStored(t, 'set 3 committed', (s) => entryOf(s.draft, 'squat')?.sets?.[2]?.reps === 7);
+      expectEqual(timingOf(entryOf(st.draft, 'squat')), [[null, null], [null, null], [90, null]], 'Squat [rest, duration] per set');
+    },
+  },
+
+  {
+    id: 'b3-timers-reload-stale',
+    title: 'Timers live in the draft (§19.2): a set timer and a rest timer carry on after a reload; one 5 hours old is dropped (no set time recorded)',
+    timeout: 150000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await t.tap('Start set 1', { within: SQ });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After "Start set 1"');
+      await waitStored(t, 'the set timer in the draft', (s) => s.draft?.timer?.kind === 'set');
+
+      await advance(t, 20);
+      await reloadApp(t);
+      await openCard(t, 'Squat');
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After a reload mid-set', { text: `Set 1 ${DOT} 0:20` });
+      await advance(t, 10);
+      await commitReps(t, SQ, 1, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, 'After committing set 1');
+      await waitStored(t, 'set 1 duration 30 (20 s before the reload, 10 s after)', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.duration === 30 && !!draftRest(s));
+
+      await advance(t, 100);
+      await reloadApp(t);
+      await openCard(t, 'Squat');
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 1, 'After a reload mid-rest', { text: 'Rest 1:40' });
+      await t.waitForRole('button', 'Start set 2', { within: TIMER });
+      await advance(t, 20);
+      await t.tap('Start set 2', { within: TIMER });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 2, 'After "Start set 2"', { text: 'rest before it 2:00' });
+      await waitStored(t, 'rest 120 on set 2 and its set timer', (s) => entryOf(s.draft, 'squat')?.sets?.[1]?.rest === 120 && s.draft.timer?.kind === 'set');
+
+      t.step('A set timer 5 hours old is dropped');
+      await advance(t, 5 * 3600);
+      await reloadApp(t);
+      await openCard(t, 'Squat');
+      await expectNoTimer(t, 'After 5 hours (set timer)', 1500);
+      await t.waitForRole('button', 'Start set 2', { within: SQ });
+      await commitReps(t, SQ, 2, 5);
+      await waitOnlyTimer(t, 'Rest timer', 'Squat', 2, 'After committing set 2');
+      const st = await waitStored(t, 'set 2 committed', (s) => entryOf(s.draft, 'squat')?.sets?.[1]?.reps === 5 && !!draftRest(s));
+      expectEqual(timingOf(entryOf(st.draft, 'squat')).slice(0, 2), [[null, 30], [120, null]], 'Squat sets 1–2: no set time from the dropped timer (the rest recorded before it stays)');
+
+      t.step('A rest timer 5 hours old is dropped');
+      await advance(t, 5 * 3600);
+      await reloadApp(t);
+      await openCard(t, 'Squat');
+      await expectNoTimer(t, 'After 5 hours (rest timer)', 1500);
+      await t.waitForRole('button', 'Start set 3', { within: SQ });
+    },
+  },
+
+  {
+    id: 'b3-edit-keeps-times',
+    title: 'Editing an old workout (§19.2): its recorded rest / set times are shown under the sets, no timers or Start buttons run, and Save keeps the values',
+    timeout: 90000,
+    async run(t) {
+      const seed = SEED_WEEK.map((s) => (s.date === '2026-11-03'
+        ? { ...s, entries: [{ exerciseId: 'squat', sets: [ts(60, 5, null, 38), ts(60, 5, 161, 40), ts(60, 5, 185, 52)] }] } : s));
+      await bootSeeded(t, seedState(seed));
+      await goTab(t, 'History');
+      const A = { role: 'article', name: historyLabel('2026-11-03', 3, 'Legs') };
+      await t.waitForRole('article', A.name);
+      await clickInside(t, A, 'Edit');
+      await t.waitForText(`Editing ${dmy('2026-11-03')}`);
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+
+      t.step('The recorded values are shown under their sets');
+      await waitMeta(t, SQ, 1, 'set 0:38', 'Editing, set 1');
+      await waitMeta(t, SQ, 2, `rest 2:41 ${DOT} set 0:40`, 'Editing, set 2');
+      await waitMeta(t, SQ, 3, `rest 3:05 ${DOT} set 0:52`, 'Editing, set 3');
+      expectEqual(await t.count('button', START_ANY, { within: 'document' }), 0, 'Start buttons while editing a saved workout');
+      await expectNoTimer(t, 'Editing, before any change', 300);
+
+      t.step('Changing reps starts nothing');
+      await commitReps(t, SQ, 3, 8);
+      await expectNoTimer(t, 'Editing, after committing set 3');
+      expectEqual(await t.count('button', START_ANY, { within: 'document' }), 0, 'Start buttons after a commit while editing');
+      const d = (await t.getJSON(STORAGE_KEY))?.draft;
+      expect(!d?.timer, `No draft.timer while editing: ${JSON.stringify(d && d.timer)}`);
+
+      await t.clearStatusLog();
+      await t.click('Save workout', { within: 'document' });
+      await t.waitForStatus(`Saved Legs ${DOT} ${dmy('2026-11-03')}`);
+      const saved = await waitStored(t, 'the edited squat reps', (s) => entryOf(savedSession(s, '2026-11-03', 'legs'), 'squat')?.sets?.[2]?.reps === 8);
+      const squat = entryOf(savedSession(saved, '2026-11-03', 'legs'), 'squat');
+      expectEqual(squat.sets.map((x) => x.reps), [5, 5, 8], 'Edited Squat reps');
+      expectEqual(timingOf(squat), [[null, 38], [161, 40], [185, 52]], 'Recorded rest / set times after the edit');
+    },
+  },
+
+  {
+    id: 'b3-history-display',
+    title: 'Display (§19.3): History lines "rest –, 2:41, 3:05 · sets 0:38, 0:40, 0:52" with "–" gaps (a part with nothing recorded left out), superset a "rounds with Lateral raise · …", b "sets …"; "· avg rest m:ss" on the History and Done summary lines',
+    timeout: 120000,
+    async run(t) {
+      const sessionList = [PULL_PLAIN('2026-11-06'), PUSH_TIMED('2026-11-07'), LEGS_TIMED(D0)];
+      await t.setClock(at(D0, '20:00'));
+      t.step('Seed storage');
+      await t.goto(BLANK_PATH);
+      await t.setStorage(STORAGE_KEY, JSON.stringify(seedState(sessionList)));
+      await openApp(t);
+
+      t.step('Done for today: the summary line adds "· avg rest 2:33"');
+      await expectDone(t, 'Pull B');
+      await waitFullText(t, `${DOT} avg rest 2:33`, { role: 'article', name: todayHeading(3, 'Legs') }, 'the Done card summary line');
+
+      await goTab(t, 'History');
+      const LEGS = { role: 'article', name: historyLabel(D0, 3, 'Legs') };
+      const PUSH = { role: 'article', name: historyLabel('2026-11-07', 2, 'Push A') };
+      const PULL = { role: 'article', name: historyLabel('2026-11-06', 1, 'Pull A') };
+      await t.waitForRole('article', LEGS.name);
+
+      t.step('Legs (opened by itself): one muted line under each exercise line');
+      const squatLine = `rest –, 2:41, 3:05 ${DOT} sets 0:38, 0:40, 0:52`;
+      const rdlLine = 'sets 0:45, 0:44, 0:47';
+      const pressLine = `rest 2:05, –, 2:21 ${DOT} sets 0:40, –, 0:42`;
+      await waitFullText(t, squatLine, LEGS);
+      await waitFullText(t, rdlLine, LEGS);
+      await waitFullText(t, pressLine, LEGS);
+      await waitFullText(t, `52 min ${DOT} avg rest 2:33`, LEGS, 'the History summary line');
+      const legs = await t.text({ within: LEGS });
+      const order = ['Squat', squatLine, 'Romanian deadlift', rdlLine, 'Leg press', pressLine, 'Leg curl'].map((x) => legs.indexOf(x));
+      expect(order.every((i, k) => i >= 0 && (k === 0 || i > order[k - 1])), `Each line sits under its exercise (order ${JSON.stringify(order)}); card: ${JSON.stringify(legs)}`);
+      expect(!/rest[^·]*· sets 0:45/.test(legs) && !legs.includes('rest –, –, –'), `Nothing rested on the Romanian deadlift → no rest part; card: ${JSON.stringify(legs)}`);
+      const curl = legs.slice(legs.indexOf('Leg curl'));
+      expect(!/\b(rest|sets)\b/.test(curl), `Leg curl recorded nothing → no rest / sets line under it; card: ${JSON.stringify(legs)}`);
+
+      t.step('Push A: superset a says "rounds with Lateral raise", superset b shows its set times only');
+      await expand(t, PUSH);
+      const a1 = `rounds with Lateral raise ${DOT} rest 2:00, 1:05, 1:25 ${DOT} sets 0:31, 0:29, 0:33`;
+      const a2 = `rounds with Lateral raise ${DOT} rest 1:40, 1:50, 2:00 ${DOT} sets 0:30, 0:31, 0:32`;
+      await waitFullText(t, a1, PUSH);
+      await waitFullText(t, a2, PUSH);
+      await waitFullText(t, 'sets 0:42, 0:40, 0:41', PUSH);
+      await waitFullText(t, 'sets 0:35, 0:36, 0:37', PUSH);
+      await waitFullText(t, `${DOT} avg rest 1:40`, PUSH, 'the Push A summary line');
+      const push = await t.text({ within: PUSH });
+      const pOrder = ['Triceps pushdown', a1, 'sets 0:42, 0:40, 0:41', 'Overhead triceps extension', a2, 'sets 0:35, 0:36, 0:37'].map((x) => push.indexOf(x));
+      expect(pOrder.every((i, k) => i >= 0 && (k === 0 || i > pOrder[k - 1])), `Superset lines in order (${JSON.stringify(pOrder)}); card: ${JSON.stringify(push)}`);
+      expect(!/rest[^·]*· sets 0:42/.test(push) && !/rest[^·]*· sets 0:35/.test(push), `Superset b lines have no rest part; card: ${JSON.stringify(push)}`);
+
+      t.step('A workout without recorded rests has no "avg rest"');
+      await t.waitForRole('article', PULL.name);
+      const pull = await t.fullText({ within: PULL });
+      expect(!pull.includes('avg rest'), `No "avg rest" without recorded rests; card: ${JSON.stringify(pull)}`);
+    },
+  },
+
+  {
+    id: 'b3-backup-roundtrip',
+    title: 'Backup round trip (§19.1): Export CSV (… rest_s, set_s) → Delete everything → Import keeps every recorded rest and set time',
+    timeout: 150000,
+    async run(t) {
+      const sessionList = [PULL_PLAIN('2026-11-06'), PUSH_TIMED('2026-11-07'), LEGS_TIMED('2026-11-08')];
+      await bootSeeded(t, seedState(sessionList));
+      const before = timersByKey((await t.getJSON(STORAGE_KEY)).sessions);
+      expect(JSON.stringify(before).includes('161'), 'The seed has recorded times');
+
+      await goTab(t, 'Data');
+      await t.click('Export backup (CSV)');
+      const dl = await t.waitForDownload({ timeout: 8000 });
+      const csv = dl.text.replace(/^\uFEFF/, '');
+      const head = csv.split('\n')[0];
+      expect(head.endsWith(',started_at,finished_at,rest_s,set_s'), `The CSV header ends with rest_s, set_s: ${head}`);
+      expect(csv.includes('Squat,2,82.5,5,kg,,,2026-11-08T18:42,2026-11-08T19:34,161,40\n'), `Squat set 2 row carries rest 161 and set 40:\n${csv.slice(0, 1200)}`);
+
+      t.step('Delete everything, then import the CSV');
+      await t.click(DELETE_ALL);
+      await t.type('Type DELETE', 'DELETE');
+      await t.click('Delete');
+      await t.waitFieldGone('Type DELETE');
+      await skipSetupIfShown(t);
+      expectEqual((await t.getJSON(STORAGE_KEY))?.sessions?.length ?? 0, 0, 'Stored workouts after Delete everything');
+      await goTab(t, 'Data');
+      await t.type('Paste workouts', csv);
+      await t.click('Preview');
+      await t.waitForRole('button', { startsWith: 'Import ' });
+      await t.click({ startsWith: 'Import ' });
+      await skipSetupIfShown(t, 400);
+      const after = await waitStored(t, `${sessionList.length} workouts imported`, (s) => s.sessions?.length === sessionList.length);
+      expectEqual(timersByKey(after.sessions), before, 'Recorded rest / set times after the CSV round trip');
+    },
+  },
+
+  {
+    id: 'b3-storage-meter',
+    title: 'Storage meter (§19.4): Data says "Storage used: less than 0.1 MB / 0.4 MB / … of about 5 MB"; above 80% an amber "Storage nearly full — export a backup, then delete old workouts."',
+    timeout: 120000,
+    async run(t) {
+      const NEARLY_FULL = 'Storage nearly full — export a backup, then delete old workouts.';
+      await boot(t);
+      await goTab(t, 'Data');
+      await t.waitForText('Storage used: less than 0.1 MB of about 5 MB');
+      expect(!(await t.text()).includes('Storage nearly full'), 'A fresh app is not nearly full');
+
+      t.step('About 0.4 MB stored');
+      const mid = seedState([{ ...SEED_WEEK[0], note: 'n'.repeat(430000) }, ...SEED_WEEK.slice(1)]);
+      await t.goto(BLANK_PATH);
+      await t.setStorage(STORAGE_KEY, JSON.stringify(mid));
+      await openApp(t);
+      await goTab(t, 'Data');
+      await t.waitForText('Storage used: 0.4 MB of about 5 MB');
+      expect(!(await t.text()).includes('Storage nearly full'), '0.4 MB is not nearly full');
+
+      t.step('Above 80% of 5 MB');
+      const big = seedState([{ ...SEED_WEEK[0], note: 'x'.repeat(4400000) }, ...SEED_WEEK.slice(1)]);
+      await t.goto(BLANK_PATH);
+      await t.setStorage(STORAGE_KEY, JSON.stringify(big));
+      await openApp(t);
+      await goTab(t, 'Data');
+      const r = await t.waitForText(/Storage used: \d+\.\d MB of about 5 MB/);
+      const shown = Number(/Storage used: (\d+\.\d) MB/.exec(r.text)[1]);
+      const used = await t.evaluate((lib, key) => key.length + (localStorage.getItem(key) || '').length, STORAGE_KEY);
+      const mb = used / (1024 * 1024);
+      expect(used / (5 * 1024 * 1024) > 0.8, `The test must store more than 80%: ${used} characters`);
+      expect(Math.abs(shown - mb) <= 0.1, `"Storage used: ${shown} MB" should be ${mb.toFixed(2)} MB to one decimal`);
+      await t.waitForText(NEARLY_FULL);
+    },
+  },
+
+  // ------------------------------------------------------------------ Batch 3 review (24/11/2026)
+
+  {
+    id: 'review-b3-start-tap-starts-workout',
+    title: 'The workout starts at the first Start tap or reps typed, whichever is first (§18.3, review): "Start set 1" at 09:00 → "Started 09:00", reps at 09:02:30 keep 09:00; a set started at 23:59 keeps its day past midnight and both times',
+    timeout: 120000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '09:00' });
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      t.step('"Start set 1" before any reps: the workout starts now');
+      await t.tap('Start set 1', { within: SQ });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After "Start set 1"');
+      await t.waitForText(`Started 09:00 ${DOT} 0 min so far`);
+      await waitStored(t, 'draft.startedAt 09:00 from the Start tap', (s) => s.draft?.startedAt === at(D0, '09:00'));
+      await advance(t, 150);
+      await commitReps(t, SQ, 1, 5);
+      let st = await waitStored(t, 'set 1 with its 150 s set time', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.duration === 150);
+      expectEqual(st.draft.startedAt, at(D0, '09:00'), 'The first reps (09:02) keep the start of the Start tap (09:00)');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      let saved = savedSession(await t.getJSON(STORAGE_KEY), D0, 'legs');
+      expectEqual([saved?.startedAt, saved?.finishedAt], [at(D0, '09:00'), at(D0, '09:02')], 'Saved workout times (the first set is inside them)');
+
+      t.step('A set started at 23:59 with no reps yet keeps its day after midnight (a tab switch redraws Today)');
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '23:59' });
+      await expectToday(t, 6, 'Legs');
+      await openCard(t, 'Squat');
+      await t.tap('Start set 1', { within: SQ });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After "Start set 1" at 23:59');
+      await advance(t, 120);
+      await goTab(t, 'History');
+      await goTab(t, 'Today');
+      await t.waitForText(`${weekday(D0)} ${dmy(D0)}`);
+      await openCard(t, 'Squat');
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'The set timer after midnight', { text: `Set 1 ${DOT} 2:00` });
+      await commitReps(t, SQ, 1, 5);
+      st = await waitStored(t, 'set 1 committed after midnight', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.duration === 120);
+      expectEqual([st.draft.date, st.draft.startedAt], [D0, at(D0, '23:59')], 'The draft keeps the day and the start of its Start tap');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      saved = savedSession(await t.getJSON(STORAGE_KEY), D0, 'legs');
+      expectEqual([saved?.startedAt, saved?.finishedAt], [at(D0, '23:59'), at(addDays(D0, 1), '00:01')], 'A workout started at 23:59 keeps both times');
+    },
+  },
+
+  {
+    id: 'review-b3-storage-full-save',
+    title: 'Storage full (review): Save shows "Couldn\'t save on this phone (storage full?) — export a backup now", never "Saved …" or the "Workout saved" sheet',
+    timeout: 90000,
+    async run(t) {
+      const FAILED = "Couldn't save on this phone (storage full?) — export a backup now";
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 1, 5);
+      await waitStored(t, 'the draft with set 1', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.reps === 5);
+      t.step('The phone refuses every write from now on (QuotaExceededError, as Safari throws when storage is full)');
+      await t.evaluate(() => {
+        Storage.prototype.setItem = function setItem() { throw new DOMException('The quota has been exceeded.', 'QuotaExceededError'); };
+        return true;
+      });
+      await sleep(500);
+      await t.clearStatusLog();
+      await t.click('Save workout', { within: 'document' });
+      await t.waitForStatus(FAILED);
+      await sleep(800);
+      const log = await t.statusLog();
+      expect(!log.some((x) => x.startsWith('Saved ')), `A workout that could not be stored must not say "Saved"; status messages: ${JSON.stringify(log)}`);
+      expect(!(await t.exists('dialog', SAVED.name)), 'No "Workout saved" sheet for a workout that could not be stored');
+      const toastNow = await t.evaluate(() => document.getElementById('toast')?.textContent || '');
+      expectEqual(toastNow, FAILED, 'The toast on screen after Save');
+      expectEqual((await t.getJSON(STORAGE_KEY)).sessions.length, SEED_WEEK.length, 'Stored workouts (nothing was written)');
+    },
+  },
+
+  {
+    id: 'review-b3-v7-rest-under-superset',
+    title: 'Upgrade (review): a Batch 2 rest timer under a pushdown set becomes a rest box; its Start opens Lateral raise set 1 with no rest on it (a superset\'s second exercise never carries one, §19.1)',
+    timeout: 90000,
+    async run(t) {
+      await t.enableTouch();
+      const blank = (n) => Array.from({ length: n }, () => ({ weight: null, reps: null, touched: false }));
+      const e = (uid, slotKey, exerciseId, name, sets) => ({ uid, slotKey, exerciseId, name, sets });
+      const draft = {
+        date: D0, day: 'pushA', offDay: false, note: '', dateChosen: false, editingId: null, extraCount: 0, startedAt: at(D0, '08:58'),
+        entries: [
+          e('main', null, 'bench', 'Bench press', blank(5)), e('pushA.press#0', 'pushA.press', 'ohp', 'Overhead press', blank(3)),
+          e('push.incline#0', 'push.incline', 'inclineDbPress', 'Incline dumbbell press', blank(3)),
+          e('push.tri1#0', 'push.tri1', 'tricepsPushdown', 'Triceps pushdown', [{ weight: 25, reps: 12, touched: true }, ...blank(2)]),
+          e('push.side1#0', 'push.side1', 'lateralRaise', 'Lateral raise', blank(3)), e('push.tri2#0', 'push.tri2', 'ohTricepsExt', 'Overhead triceps extension', blank(3)),
+          e('push.side2#0', 'push.side2', 'lateralRaise', 'Lateral raise', blank(3)),
+        ],
+        rest: { uid: 'push.tri1#0', set: 0, extra: 0 }, // Batch 2 (ppl-v7) shape; startedAt: 50 s before the page's now
+      };
+      await t.setClock(at(D0, '09:00:00'), { frozen: true });
+      t.step('Seed a ppl-v7 state whose draft has a running rest timer under pushdown set 1');
+      await t.goto(BLANK_PATH);
+      await t.evaluate((lib, key, json) => {
+        const st = JSON.parse(json);
+        st.draft.rest.startedAt = Date.now() - 50000;
+        localStorage.setItem(key, JSON.stringify(st));
+        return true;
+      }, STORAGE_KEY, JSON.stringify({ ...seedState([PULL_PLAIN('2026-11-09')]), draft }));
+      await openApp(t);
+      await expectToday(t, 2, 'Push A');
+      await openCard(t, 'Triceps pushdown');
+      const tm = await waitOnlyTimer(t, 'Rest timer', 'Triceps pushdown', 1, 'The migrated rest timer', { text: 'Rest 0:50' });
+      expect(tm.text.includes('Lateral raise'), `Its Start goes to Lateral raise set 1; the rest box says ${JSON.stringify(tm.text)}`);
+      await advance(t, 10);
+      await t.tap('Start next exercise', { within: TIMER });
+      const s1 = await waitOnlyTimer(t, 'Set timer', 'Lateral raise', 1, 'After its Start', { text: `Set 1 ${DOT} 0:00` });
+      expect(!s1.text.includes('rest before it'), `No rest inside a superset round; the set timer says ${JSON.stringify(s1.text)}`);
+      const st = await waitStored(t, 'the set timer on Lateral raise #1 set 1', (s) => s.draft?.timer?.kind === 'set' && s.draft.timer.uid === 'push.side1#0');
+      expect(!('rest' in st.draft), 'draft.rest is gone (it became draft.timer)');
+      expectEqual(timingOf(entryOf(st.draft, 'lateralRaise', 0))[0], [null, null], 'Lateral raise #1 set 1 [rest, duration]');
+    },
+  },
+
+  {
+    id: 'review-b3-skip-keeps-place',
+    title: 'After Skip / Cancel the "Start set N" button stays where the workout is (review; DECISIONS: sets left earlier come at the end), not back at a Squat set left earlier',
+    timeout: 120000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK));
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      const RDL = card('Romanian deadlift');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 1, 5);
+      await commitReps(t, SQ, 3, 7);
+      t.step('Squat set 2 left out; Romanian deadlift set 1 through "Start next exercise"');
+      await advance(t, 120);
+      await t.tap('Start next exercise', { within: TIMER });
+      await waitOnlyTimer(t, 'Set timer', 'Romanian deadlift', 1, 'After "Start next exercise"');
+      await advance(t, 40);
+      await t.type('Set 1 weight', 50, { within: RDL });
+      await commitReps(t, RDL, 1, 10);
+      await waitOnlyTimer(t, 'Rest timer', 'Romanian deadlift', 1, 'After Romanian deadlift set 1');
+      await advance(t, 5);
+      await t.tap('Skip', { within: TIMER });
+      await t.waitGone('timer', 'Rest timer', { within: 'document' });
+      t.step('After Skip: "Start set 2" under Romanian deadlift set 2');
+      await t.waitForRole('button', 'Start set 2', { within: RDL });
+      expectEqual(await t.count('button', /^Start set \d+$/, { within: SQ }), 0, '"Start set N" buttons in the Squat card after Skip');
+      await t.tap('Start set 2', { within: RDL });
+      await waitOnlyTimer(t, 'Set timer', 'Romanian deadlift', 2, 'After the row "Start set 2"');
+      await advance(t, 5);
+      await t.tap('Cancel', { within: SET_TIMER });
+      await t.waitGone('timer', 'Set timer', { within: 'document' });
+      t.step('After Cancel: the button is back on the same set');
+      await t.waitForRole('button', 'Start set 2', { within: RDL });
+      expectEqual(await t.count('button', /^Start set \d+$/, { within: SQ }), 0, '"Start set N" buttons in the Squat card after Cancel');
     },
   },
 ];

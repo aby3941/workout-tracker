@@ -1,14 +1,20 @@
 // CSV backup format: one row per set. RFC-4180 quoting, comma or tab delimited on import.
 
 import { formatDate, parseDatePrefix, sortByDate, parseLocalTime } from './dates.js';
-import { DAYS, matchExercise, customId, exerciseName, dayFromName } from './program.js';
+import { DAYS, matchExercise, customId, exerciseName, dayFromName, isRecordedRest, isRecordedDuration } from './program.js';
 import { convertWeight, formatNumber } from './units.js';
 
-/** Exact export header. `started_at` / `finished_at` (§18.3) hold the workout times, repeated on every row like `note`. */
-export const CSV_HEADER = 'date,day,exercise,set,weight,reps,unit,off_day,note,started_at,finished_at';
+/**
+ * Exact export header. `started_at` / `finished_at` (§18.3) hold the workout times, repeated on every row like `note`;
+ * `rest_s` / `set_s` (§19.1) the set's recorded rest and set time in whole seconds (empty = not recorded).
+ */
+export const CSV_HEADER = 'date,day,exercise,set,weight,reps,unit,off_day,note,started_at,finished_at,rest_s,set_s';
 
 /** Workout time columns → session fields. Optional on import (older backups have none). */
 const TIME_COLUMNS = [['started_at', 'startedAt', 'start'], ['finished_at', 'finishedAt', 'finish']];
+
+/** Recorded set time columns → set fields (§19.1). Optional on import (older backups have none). */
+const SET_TIME_COLUMNS = [['rest_s', 'rest', isRecordedRest, 'rest'], ['set_s', 'duration', isRecordedDuration, 'set']];
 
 const REQUIRED = ['date', 'day', 'exercise', 'weight', 'reps'];
 
@@ -34,6 +40,7 @@ export function toCSV(sessions, unit) {
           formatDate(s.date), dayName, exerciseName(e.exerciseId, e.name), i + 1,
           formatNumber(set.weight), set.reps, unit, s.offDay ? 'yes' : '', s.note || '',
           s.startedAt || '', s.finishedAt || '',
+          isRecordedRest(set.rest) ? set.rest : '', isRecordedDuration(set.duration) ? set.duration : '',
         ].map(field).join(','));
       });
     }
@@ -97,6 +104,8 @@ const UNIT_ALIASES = { kg: 'kg', kgs: 'kg', lb: 'lb', lbs: 'lb' };
  * CSV text → sessions (no ids). Header columns in any order; date, day, exercise, weight, reps required.
  * Workout times (`started_at`, `finished_at`) are read once per workout; an unreadable one is skipped with a warning.
  * Dates on these lines are read with the date column's rules (day-first), so a hand-edited "10/11/2026 18:42" works.
+ * A set's recorded rest and set time (`rest_s`, `set_s`, whole seconds) are kept when usable; an unreadable one is
+ * skipped with a warning and the set is kept.
  * @param {string} text
  * @param {{unit?: 'kg'|'lb'}} [opts]
  * @returns {{sessions: Array<object>, warnings: Array<{line: number, text: string, message: string}>}}
@@ -140,6 +149,13 @@ export function parseCSV(text, { unit = 'kg' } = {}) {
     const exerciseId = known || customId(name);
     const rawWeight = weightText === 'bw' ? 0 : Number(weightText);
     const set = { weight: convertWeight(rawWeight, rowUnit, unit), reps: Number(repsText) };
+    for (const [column, prop, valid, word] of SET_TIME_COLUMNS) {
+      const text = get(column);
+      if (!text) continue;
+      const v = /^\d+$/.test(text) ? Number(text) : NaN;
+      if (valid(v)) set[prop] = v;
+      else warn(`Can't read the ${word} time "${text}" — the set is kept without it`);
+    }
     const setNo = /^\d+$/.test(get('set')) ? Number(get('set')) : null;
 
     const key = `${d.date}|${day}`;

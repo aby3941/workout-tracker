@@ -295,6 +295,27 @@ html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) +
 .chip-btn::after { content: ''; position: absolute; inset: -4px 0; } /* 44px tap target, mock-sized pill */
 @media (prefers-reduced-motion: reduce) { .rest-track span { transition: none; } }
 
+/* ---------- Today: Batch 3 (recorded rest, set timer, supersets as one; mock docs/design/rest-and-set-timer.html) ---------- */
+/* the rest box's Start button: next to +30 s / Skip for "Start set N", on a row of its own for a longer label */
+.startbtn { flex: 1; min-width: 0; border: 0; border-radius: 12px; background: var(--s1); color: #fff; font-size: 14.5px; font-weight: 600;
+            padding: 10px 14px; min-height: 44px; overflow-wrap: anywhere; line-height: 1.25; }
+.startbtn small { display: block; font-size: 12px; font-weight: 500; opacity: .9; }
+.startbtn .go, .startmini .go { font-size: .8em; }
+.rest-actions.with-start { align-items: center; }
+.rest-actions.spread { justify-content: space-between; align-items: center; gap: 8px; }
+.rest-actions.spread .muted { font-size: 12.5px; }
+/* the set box under the set being done (mock screen 2) */
+.setbox { display: grid; gap: 6px; margin: 6px 0 2px 54px; padding: 8px 10px; border: 2px solid var(--s1); border-radius: 12px; font-size: 13px; }
+.setbox .rest-text b { font-size: 16px; }
+/* what was recorded, under a committed set: "rest 2:41 · set 0:38" */
+.setmeta { margin: 2px 0 4px 54px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* "▶ Start set N" under the next set to do while no timer runs */
+.startrow { margin: 4px 0 2px 54px; }
+.startmini { position: relative; border: 1px solid var(--border); background: var(--surface); color: var(--s1); border-radius: 999px;
+             padding: 6px 12px; font-size: 13px; font-weight: 600; min-height: 36px; }
+.startmini::after { content: ''; position: absolute; inset: -4px 0; } /* 44px tap target */
+.ss-link { text-align: center; font-size: 12px; color: var(--ink-2); margin: 4px 0 -4px; }
+
 .pill.best { background: color-mix(in srgb, var(--warning) 22%, transparent); border-color: transparent; color: var(--ink); }
 .best-tag { font-style: normal; font-size: 10.5px; color: var(--ink); background: color-mix(in srgb, var(--warning) 30%, transparent);
             border-radius: 999px; padding: 0 6px; margin-left: 4px; vertical-align: 1px; white-space: nowrap; }
@@ -312,6 +333,7 @@ html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) +
 .pr b { display: block; font-size: 17px; font-weight: 600; }
 .pr span { color: var(--ink-2); font-size: 13px; }
 .sumgrid { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin: 14px 0; }
+.sumgrid.two-rows { grid-auto-flow: row; grid-template-columns: 1fr 1fr; } /* four tiles (with the average rest) fit a phone as 2 × 2 */
 .sumgrid div { background: var(--chip); border-radius: 12px; padding: 8px; }
 .sumgrid b { display: block; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sumgrid span { font-size: 11.5px; color: var(--ink-2); }
@@ -350,6 +372,7 @@ html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) +
 .hline span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .hline span:last-child { color: var(--ink-2); text-align: right; flex: 0 0 auto; max-width: 62%; }
 .sum { font-size: 12.5px; color: var(--ink-2); margin: 0; }
+.restline { margin: -2px 0 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; } /* recorded rest / set times (§19.3) */
 .note-line { margin-top: 6px; }
 .hist-actions { display: flex; gap: 8px; margin-top: 10px; }
 .tagoff { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--ink-2); flex: none; }
@@ -357,6 +380,9 @@ html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) +
 /* ---------- Data ---------- */
 .card.status p { margin: 0; }
 .card.status .muted { margin-top: 2px; }
+.card.status .storage-warn { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; padding: 8px 10px; border-radius: 10px; font-size: 13px;
+                             color: var(--ink); background: color-mix(in srgb, var(--warning) 22%, transparent); }
+.storage-warn .ic-warn { width: 18px; height: 18px; flex: none; margin-top: 1px; }
 .paste { display: block; width: 100%; margin-top: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
          font: 16px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); resize: vertical; }
 .paste:focus { outline: none; border-color: var(--s1); }

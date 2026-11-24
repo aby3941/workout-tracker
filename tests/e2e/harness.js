@@ -445,23 +445,39 @@ function pageLib() {
 // Scripts injected into every new document
 // ---------------------------------------------------------------------------------------------
 
-function clockScript({ y, mo, d, h, mi, s }) {
+/**
+ * The pinned clock for every new document: local parts ({y, mo, d, h, mi, s}) or an absolute `ms`. `frozen` stops it
+ * (Date.now() stays put until `__e2eClock.advance(ms)` moves it), so timers measured in whole seconds come out exact.
+ * In-page control (Batch 3 tests): `__e2eClock.advance(ms)`, `.freeze()`, `.unfreeze()`, `.now()`.
+ */
+function clockScript({ y, mo, d, h, mi, s, ms = null, frozen = false }) {
+  const targetExpr = ms != null ? String(Number(ms)) : `new RealDate(${y}, ${mo - 1}, ${d}, ${h}, ${mi}, ${s}, 0).getTime()`;
   return `(() => {
   const RealDate = globalThis.Date;
-  const target = new RealDate(${y}, ${mo - 1}, ${d}, ${h}, ${mi}, ${s}, 0).getTime();
-  const offset = target - RealDate.now();
+  const target = ${targetExpr};
+  let offset = target - RealDate.now();
+  let frozenAt = ${frozen ? 'target' : 'null'};
+  const now = () => (frozenAt != null ? frozenAt : RealDate.now() + offset);
   const FakeDate = function Date(...args) {
-    if (!new.target) return new RealDate(RealDate.now() + offset).toString();
-    return Reflect.construct(RealDate, args.length ? args : [RealDate.now() + offset], new.target);
+    if (!new.target) return new RealDate(now()).toString();
+    return Reflect.construct(RealDate, args.length ? args : [now()], new.target);
   };
   Object.defineProperty(FakeDate, 'length', { value: 7 });
   FakeDate.prototype = RealDate.prototype;
-  FakeDate.now = () => RealDate.now() + offset;
+  FakeDate.now = () => now();
   FakeDate.parse = RealDate.parse;
   FakeDate.UTC = RealDate.UTC;
   try { Object.defineProperty(RealDate.prototype, 'constructor', { value: FakeDate, writable: true, configurable: true }); } catch (e) {}
   globalThis.Date = FakeDate;
-  Object.defineProperty(globalThis, '__e2eClock', { value: { target, offset } });
+  Object.defineProperty(globalThis, '__e2eClock', { value: {
+    target,
+    get offset() { return offset; },
+    get frozen() { return frozenAt != null; },
+    now,
+    advance(delta) { if (frozenAt != null) frozenAt += delta; else offset += delta; return now(); },
+    freeze() { frozenAt = now(); return frozenAt; },
+    unfreeze() { if (frozenAt != null) { offset = frozenAt - RealDate.now(); frozenAt = null; } return now(); },
+  } });
 })();`;
 }
 
@@ -861,15 +877,37 @@ export async function openSession({ server, viewport = IPHONE, colorScheme = 'li
     },
     /**
      * Pin "now" for every document loaded from here on: Date starts at this local date-time
-     * and advances normally. Takes effect on the next goto()/reload().
-     * @param {string} localDateTime 'YYYY-MM-DDTHH:MM'
+     * and advances normally (`frozen: true`: it stands still until `advanceClock`). Takes effect on the next
+     * goto()/reload().
+     * @param {string} localDateTime 'YYYY-MM-DDTHH:MM[:SS]'
+     * @param {{frozen?: boolean}} [opts]
      */
-    async setClock(localDateTime) {
+    async setClock(localDateTime, { frozen = false } = {}) {
       if (clockScriptId) await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: clockScriptId });
-      const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: clockScript(parseLocal(localDateTime)) });
+      const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: clockScript({ ...parseLocal(localDateTime), frozen }) });
       clockScriptId = identifier;
-      trail.push(`clock=${localDateTime}`);
+      trail.push(`clock=${localDateTime}${frozen ? ' (frozen)' : ''}`);
     },
+    /**
+     * Move the open page's clock forward by exactly `seconds` without a reload (a frozen clock stays frozen), and
+     * re-pin new documents to the new time, so a later reload() carries on from here. Returns the page's new now (ms).
+     * @param {number} seconds
+     */
+    async advanceClock(seconds) {
+      const r = await evaluate((lib, ms) => {
+        const c = globalThis.__e2eClock;
+        if (!c || typeof c.advance !== 'function') return null;
+        return { now: c.advance(ms), frozen: c.frozen };
+      }, Math.round(seconds * 1000));
+      if (!r) throw new E2EError('advanceClock: the page has no pinned clock (call setClock before goto/reload)');
+      if (clockScriptId) await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: clockScriptId });
+      const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: clockScript({ ms: r.now, frozen: r.frozen }) });
+      clockScriptId = identifier;
+      trail.push(`clock +${seconds} s`);
+      return r.now;
+    },
+    /** The page's Date.now() (ms). */
+    clockNow: () => evaluate(() => Date.now()),
 
     async screenshot(name) {
       fs.mkdirSync(SHOTS_DIR, { recursive: true });

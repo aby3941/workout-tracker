@@ -141,6 +141,59 @@ export function restPhase(elapsedSeconds, role, extraSeconds = 0) {
  */
 export const MAX_WORKOUT_MINUTES = 240;
 
+/**
+ * Recorded times on a set (§19.1), in whole seconds: `rest` — the rest taken right before the set, 0–3600 — and
+ * `duration` — the set timer, from Start to committing the reps, 1–3600. Anything else is not a recorded time.
+ */
+export const MAX_RECORDED_SECONDS = 3600;
+
+/**
+ * Is this a usable recorded rest (a whole number of seconds, 0–3600)?
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+export function isRecordedRest(v) {
+  return Number.isInteger(v) && v >= 0 && v <= MAX_RECORDED_SECONDS;
+}
+
+/**
+ * Is this a usable recorded set time (a whole number of seconds, 1–3600)?
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+export function isRecordedDuration(v) {
+  return Number.isInteger(v) && v >= 1 && v <= MAX_RECORDED_SECONDS;
+}
+
+/**
+ * A logged set {weight, reps} with its recorded times when they are usable — `rest` / `duration` are added only
+ * when valid (never as undefined), so a set without them stays `{weight, reps}`.
+ * @param {number} weight
+ * @param {number} reps
+ * @param {{rest?: unknown, duration?: unknown}} [times]
+ * @returns {{weight: number, reps: number, rest?: number, duration?: number}}
+ */
+export function loggedSet(weight, reps, { rest, duration } = {}) {
+  const set = { weight, reps };
+  if (isRecordedRest(rest)) set.rest = rest;
+  if (isRecordedDuration(duration)) set.duration = duration;
+  return set;
+}
+
+/**
+ * The recorded times of an entry's sets by position from set 1 (null = not recorded): `rests` and `durations`, each
+ * null when no set has one. What the text backup, History and Today show.
+ * @param {Array<{rest?: unknown, duration?: unknown}>} sets
+ * @returns {{rests: Array<number|null>|null, durations: Array<number|null>|null}}
+ */
+export function recordedTimes(sets) {
+  const list = sets || [];
+  const rests = list.map((s) => (s && isRecordedRest(s.rest) ? s.rest : null));
+  const durations = list.map((s) => (s && isRecordedDuration(s.duration) ? s.duration : null));
+  const any = (xs) => xs.some((x) => x != null);
+  return { rests: any(rests) ? rests : null, durations: any(durations) ? durations : null };
+}
+
 /** Consecutive misses at the same weight before a deload. */
 export const MISSES_BEFORE_DELOAD = 3;
 
@@ -459,6 +512,31 @@ export function getDayPlan(dayId, { choices = {}, goal = 'standard', abs = false
     });
   }
   return { day: dayId, main: { exerciseId: day.main, sets: day.mainSets, reps: MAIN_REPS }, items };
+}
+
+/**
+ * The superset pairs of a plan (§19.1), in plan order: two items whose `supersetWith` point at each other — the two
+ * exercises of a combo slot (rear delt fly + band pull-apart), or an item and the one in its partner slot
+ * (push.tri1 ↔ push.side1, push.tri2 ↔ push.side2; by slot, so two pushdowns still pair with their own side slot).
+ * `a` is the earlier item: a round is a's set N, then b's set N. The pairs hold the plan's own item objects.
+ * @param {{items: Array<{slotKey: string, exerciseId: string, supersetWith: string|null}>}} plan
+ * @returns {Array<[object, object]>}
+ */
+export function supersetPairs(plan) {
+  const items = (plan && plan.items) || [];
+  const used = new Set();
+  const pairs = [];
+  items.forEach((a, i) => {
+    if (used.has(a) || !a.supersetWith) return;
+    const partnerSlot = SLOTS[a.slotKey] ? SLOTS[a.slotKey].supersetWith : null;
+    const b = items.find((x, j) => j > i && !used.has(x) && (x.slotKey === a.slotKey || x.slotKey === partnerSlot)
+      && x.exerciseId === a.supersetWith && x.supersetWith === a.exerciseId);
+    if (!b) return;
+    used.add(a);
+    used.add(b);
+    pairs.push([a, b]);
+  });
+  return pairs;
 }
 
 // ---------------------------------------------------------------- rotation

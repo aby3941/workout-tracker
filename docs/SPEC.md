@@ -471,7 +471,7 @@ Owner: "I added an exercise, nothing happened" / "tried swapping hanging leg rai
 
 ### 18.3 Workout times
 - Sessions gain optional `startedAt` and `finishedAt`: local wall-clock strings `"YYYY-MM-DDTHH:MM"` (no time zone, like dates). New helpers in dates.js: `nowLocal(now = new Date())`, `formatTime(local)` → `"18:42"`, `minutesBetween(a, b)`, `formatDuration(min)` → `"52 min"` / `"1 h 5 min"`.
-- `draft.startedAt` is set once, when the first reps value is entered. Save sets `finishedAt` to now for new workouts; editing an old workout keeps its times.
+- `draft.startedAt` is set once, at the earlier of the first Start tap (§19.2) and the first reps value entered *(amended 24/11/2026 by the Batch 3 review: the first set's time belongs to the workout)*. Save sets `finishedAt` to now for new workouts; editing an old workout keeps its times.
 - Today header (under the heading): before starting — "Last workout: Tue 18/11 at 19:41" (the time it was saved, i.e. `finishedAt` — the owner asked for "the time which last workout was added") (or "Last workout: Tue 18/11" when it has no time; nothing when there is no history); once started — "Started 18:42 · 23 min so far" (minutes update each minute).
 - History cards show "18:42 – 19:34 · 52 min"; workouts without times show "Time not recorded".
 - Backups keep times: CSV gains optional columns `started_at`, `finished_at` (repeated on each row like `note`; old backups without them still import). The text format gains an optional line `Time: 18:42–19:34` per session (parsed back; missing = no times). Round trips must preserve times.
@@ -490,3 +490,50 @@ Owner: "I added an exercise, nothing happened" / "tried swapping hanging leg rai
 
 ### 18.6 Housekeeping
 - `sw.js` cache → `ppl-v7`, PRECACHE equal to the real files. DECISIONS.md rows for each §18 item; README features updated.
+
+## 19. Batch 3 — recorded rest, set timer, supersets as one, storage meter (owner approved 24/11/2026; mock `docs/design/rest-and-set-timer.html`)
+
+Owner: "the rest time should be recorded too, and a next-exercise start button — the rest must not include the next exercise's time"; "both" (also time each set); "for supersets consider the rest time as one".
+
+### 19.1 Data
+- Sets gain two optional whole-second numbers:
+  - `rest` (0–3600): the rest taken **right before** this set. It runs from the end of the previous set (or the previous superset round, or the previous exercise's last set) to tapping Start. It is recorded only when Start is tapped.
+  - `duration` (1–3600): from the set timer's start (a Start tap, or the automatic start inside a superset) to committing the reps. It is recorded only when the set timer ran for that set.
+- **Supersets:** a pair is two plan items whose `supersetWith` point at each other (push.tri1/side1, push.tri2/side2, and the face-pull combo rear delt fly + band pull-apart). `program.supersetPairs(plan)` → `[[a, b], …]` in plan order (a = the earlier item). Round N = a's set N, then b's set N. There is **one rest per round, recorded on a's set N+1**; b's sets never carry `rest`.
+- `store.migrate` keeps valid `rest` / `duration` and drops invalid ones. Batch 2's `draft.rest` is migrated to `draft.timer` (below).
+- **CSV:** columns `rest_s`, `set_s` are appended after `finished_at` (empty = not recorded). Old backups still import. **Text:** an optional line directly after an exercise line, indented two spaces: `rest 2:41 3:05 · sets 0:35 0:40 0:52` (`-` = not recorded; either part may be absent). It is parsed back, and round trips keep everything.
+- `dates.formatClock(seconds)` → `"2:41"`, `"0:05"`, `"61:40"`; `dates.parseClock("2:41")` → 161 (null when unreadable). **Name clash:** Batch 2 already has a wall-clock `dates.parseClock` ("18:42" for the `Time:` line). Rename that one to `parseWallClock` (update parser.js and its callers); `parseClock` now means minutes:seconds as above.
+- `analysis.restSummary(session)` → `{ average, count }`, the average of the recorded rests in seconds (null when none).
+
+### 19.2 Today flow (new workouts only; editing an old workout runs no timers, and its recorded values are kept and shown)
+- One timer at a time, in the draft: `draft.timer = { kind: 'rest', uid, set, startedAt, extra }` or `{ kind: 'set', uid, set, startedAt }`. It survives reloads. A timer whose `startedAt` is more than 4 hours old is dropped (same rule as §18.3). Removing a set clears its timer.
+- **Committing the reps of set N** on exercise X:
+  1. If a set timer is running for that set → `duration` = whole seconds since its start (at least 1).
+  2. If X is the earlier exercise (a) of a superset pair and b has a set N → **b's set N timer starts automatically** (no rest), and b's card opens and scrolls into view.
+  3. Otherwise a rest timer starts under that set (Batch 2 look; aim from the role of X, accessory for b). Its start button depends on what comes next:
+     - the next set of X exists, or for b the next round (a's set N+1) → `Start set N+1`, or `Start round N+1 · <a name>` for supersets;
+     - otherwise the next exercise card that still has an empty set → `Start next exercise` (accessible name exactly that; the visible text may add the exercise name);
+     - otherwise no start button.
+     
+     It also has `+30 s` and `Skip`.
+- **Tapping a start button:**
+  - the rest (whole seconds elapsed) is saved on the target set's `rest`: the next set; for a superset round, a's set N+1; for the next exercise, its set 1;
+  - a set timer then starts for the target set;
+  - if the target is in another card, that card opens and scrolls into view.
+- **Set timer box** (under the running set): `role="timer"`, name `Set timer`. It shows "Set N · m:ss", plus "rest before it m:ss" when one was recorded, and has a button `Cancel` (stops the timer; no duration recorded; a rest already recorded stays).
+- **No timer running** → the next set to do (the first empty set of the first unfinished card, including set 1 of the workout and after Skip/Cancel) shows a small button `Start set N` that starts its set timer (no rest recorded).
+- Committing reps while a rest timer runs for a **different** set (Start wasn't tapped) → that new set gets no `rest` and no `duration`, and a new rest timer starts as usual.
+- Under every committed set row, a muted line shows what was recorded: "set 0:38" or "rest 2:41 · set 0:38".
+- The beep is unchanged (rest ready only). The set timer never beeps.
+
+### 19.3 Display
+- **History** (open card): under each exercise line, a muted line `rest 2:41, 3:05 · sets 0:38, 0:40, 0:52`, with "–" for gaps. A part with nothing recorded is omitted. Superset a: `rounds with <b> · rest … · sets …`; superset b: `sets …` only.
+- The summary line on History and Done cards adds `· avg rest 2:20` when any rest was recorded. The **Workout saved** sheet adds a tile "Avg rest 2:20".
+
+### 19.4 Storage meter (Data)
+- `store.storageUse(storage)` → `{ used, quota, ratio }`. `used` = the stored JSON's length in characters (key + value); `quota` = 5 × 1024 × 1024; `ratio` = used / quota.
+- Data's status card shows "Storage used: 0.4 MB of about 5 MB" (1 decimal; "less than 0.1 MB" below that).
+- Above 80%, an amber status (icon + text, never colour alone): "Storage nearly full — export a backup, then delete old workouts."
+
+### 19.5 Housekeeping
+- `sw.js` → `ppl-v8`, PRECACHE equal to the real files. DECISIONS.md rows; README features and test counts.

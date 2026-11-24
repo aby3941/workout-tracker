@@ -1,7 +1,7 @@
 // Progress analysis: e1RM, per-exercise series, PBs, new bests, weekly volume, summary, watch list.
 
 import { sortByDate, weekStart, addDays, compareISO, isValidISO } from './dates.js';
-import { MAIN_LIFTS, roleOf, exerciseName, isTimed } from './program.js';
+import { MAIN_LIFTS, roleOf, exerciseName, isTimed, isRecordedRest } from './program.js';
 import { entriesFor, maxWeight, suggestMain, occurrencesOf } from './progression.js';
 import { roundTo, cleanNumber } from './units.js';
 
@@ -27,6 +27,18 @@ const volumeOf = (sets) => cleanNumber(sets.reduce((sum, s) => sum + (Number(s.w
  */
 export function sessionVolume(session) {
   return cleanNumber((session.entries || []).reduce((sum, e) => sum + (isTimed(e.exerciseId) ? 0 : volumeOf(e.sets || [])), 0));
+}
+
+/**
+ * The recorded rests of a workout (§19.1): their average in whole seconds (null when none is recorded) and how many
+ * there are. Set times are not rests; a recorded rest of 0 s counts.
+ * @param {{entries?: Array<{sets?: Array<{rest?: number}>}>}} session
+ * @returns {{average: number|null, count: number}}
+ */
+export function restSummary(session) {
+  const rests = (session.entries || []).flatMap((e) => (e.sets || []).map((s) => s && s.rest).filter(isRecordedRest));
+  if (!rests.length) return { average: null, count: 0 };
+  return { average: Math.round(rests.reduce((a, b) => a + b, 0) / rests.length), count: rests.length };
 }
 
 /**

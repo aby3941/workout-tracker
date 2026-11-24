@@ -1,6 +1,6 @@
 // Boot, state, tab routing, saving, the service worker and app-wide banners.
 
-import { load, save } from './store.js';
+import { load, save, storageUse } from './store.js';
 import { todayISO } from './dates.js';
 import { renderToday } from './ui/today.js';
 import { renderPlan } from './ui/plan.js';
@@ -23,10 +23,16 @@ let tab = 'today';
 let saveTimer = 0;
 let persistAsked = false;
 
+/**
+ * Write the state now. Returns false when the phone refused (storage full): then the warning is shown — after the
+ * current tap's own message ("Saved …", "Imported …"), so that one can never hide it.
+ */
 function saveNow() {
   clearTimeout(saveTimer);
   saveTimer = 0;
-  if (!save(state, storage)) toast("Couldn't save on this phone (storage full?) — export a backup now");
+  if (save(state, storage)) return true;
+  setTimeout(() => toast("Couldn't save on this phone (storage full?) — export a backup now"), 0);
+  return false;
 }
 
 /** Draw the current tab. Keeps the scroll position unless told otherwise; puts focus back where it was. */
@@ -50,11 +56,12 @@ const ctx = {
   get state() { return state; },
   /** Replace the state without saving or drawing (the caller saves). */
   setState(next) { state = next; },
-  /** Replace the state, save it, and redraw (unless render: false). */
+  /** Replace the state, save it, and redraw (unless render: false). Returns false when the save failed (`saveNow`). */
   commit(next, { render: draw = true, keepScroll = true } = {}) {
     state = next;
-    saveNow();
+    const saved = saveNow();
     if (draw) render({ keepScroll });
+    return saved;
   },
   /** Save soon (draft autosave while typing). */
   saveSoon() {
@@ -70,6 +77,8 @@ const ctx = {
     render({ keepScroll: false });
   },
   today: () => todayISO(),
+  /** How much of the phone's storage the saved state takes (§19.4). */
+  storageUse: () => storageUse(storage),
   /** Ask the browser to keep our storage (once, after the first saved workout). */
   afterSave() {
     if (persistAsked) return;

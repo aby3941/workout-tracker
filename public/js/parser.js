@@ -1,9 +1,12 @@
 // Free-text workout import/export ("10/11/2026 Pull A" / "Deadlift 100x7" / "Note: …").
 
 import {
-  todayISO, formatDate, parseDatePrefix, sortByDate, isValidLocalTime, formatTime, localDate, parseClock, clockAfter, parseLocalTime,
+  todayISO, formatDate, parseDatePrefix, sortByDate, isValidLocalTime, formatTime, localDate, parseWallClock, clockAfter, parseLocalTime,
+  formatClock, parseClock,
 } from './dates.js';
-import { DAYS, matchExercise, customId, exerciseName, parseDayText, resolveDay } from './program.js';
+import {
+  DAYS, matchExercise, customId, exerciseName, parseDayText, resolveDay, isRecordedRest, isRecordedDuration, recordedTimes,
+} from './program.js';
 import { convertWeight, formatNumber } from './units.js';
 import { parseCSV } from './csv.js';
 import { sessionKey } from './store.js';
@@ -163,7 +166,7 @@ const TIME_RANGE_RE = new RegExp(`^(?:${TIME_SIDE})?\\s*[–—-]\\s*(?:${TIME_S
 /** One side of a Time line → local time, or null when unreadable. `anchor(clock)` places a bare clock time. */
 function readSide(dateText, clockText, anchor, today) {
   if (dateText != null) return parseLocalTime(`${dateText} ${clockText}`, { today });
-  const clock = parseClock(clockText);
+  const clock = parseWallClock(clockText);
   return clock ? anchor(clock) : null;
 }
 
@@ -206,6 +209,55 @@ function parseTimeRange(text, date, today) {
     out.finishedAt = end;
   }
   return out;
+}
+
+// ---------------------------------------------------------------- rest / set times ("  rest - 2:41 3:05 · sets 0:38 0:40 0:52", §19.1)
+// An optional line right under an exercise line: the recorded rest before each set and each set's time, by position
+// from set 1 ("-" = not recorded). Either part may be missing.
+
+const TIME_TOKEN = '(?:\\d{1,4}:\\d{2}|[-–—])';
+const TIMES_RE = new RegExp(`^(?:rest((?:\\s+${TIME_TOKEN})+))?\\s*[·|]?\\s*(?:sets?((?:\\s+${TIME_TOKEN})+))?$`, 'i');
+
+/**
+ * The rest / set times line of an entry's sets ("rest - 2:41 3:05 · sets 0:38 0:40 0:52"), or '' when none is
+ * recorded. One value per set, so the line lines up with the sets however they are compressed above it.
+ * @param {Array<object>} sets
+ * @returns {string}
+ */
+function timesText(sets) {
+  const { rests, durations } = recordedTimes(sets);
+  const part = (word, values) => (values ? `${word} ${values.map((v) => (v == null ? '-' : formatClock(v))).join(' ')}` : '');
+  return [part('rest', rests), part('sets', durations)].filter(Boolean).join(' · ');
+}
+
+/** A rest / set times line → {rests, durations}: the raw tokens of each part (null when absent); not one → null. */
+function readTimesLine(line) {
+  const m = TIMES_RE.exec(line);
+  if (!m || (!m[1] && !m[2])) return null;
+  const tokens = (part) => (part ? part.trim().split(/\s+/) : null);
+  return { rests: tokens(m[1]), durations: tokens(m[2]) };
+}
+
+/**
+ * Put the times of a rest / set times line on the entry's sets (by position). Unreadable or out-of-range values and
+ * values past the last set are skipped, each with a message.
+ * @returns {string[]} messages for the line's warnings
+ */
+function applyTimes(entry, { rests, durations }) {
+  const errors = [];
+  const put = (tokens, key, valid, word) => {
+    if (!tokens) return;
+    if (tokens.length > entry.sets.length) errors.push(`More ${word} times than sets — the extra ones are ignored`);
+    tokens.slice(0, entry.sets.length).forEach((tok, i) => {
+      if (/^[-–—]$/.test(tok)) return;
+      const v = parseClock(tok);
+      if (valid(v)) entry.sets[i][key] = v;
+      else errors.push(`Couldn't use the ${word} time "${tok}" — ${word === 'rest' ? 'rests go from 0:00' : 'set times go from 0:01'} to 60:00`);
+    });
+  };
+  put(rests, 'rest', isRecordedRest, 'rest');
+  put(durations, 'duration', isRecordedDuration, 'set');
+  return errors;
 }
 
 /** Does `str` open with a weight × reps set ("100x5", "62.5 kg x 5", "bw x 8", "bw+10x8", "3x12@45")? */
@@ -287,11 +339,22 @@ export function parseImport(text, { unit = 'kg', today = todayISO() } = {}) {
   };
 
   const lines = noBom.split('\n');
+  let lastEntry = null; // the entry of the exercise line just above (its rest / set times line may follow)
   lines.forEach((rawLine, idx) => {
     const lineNo = idx + 1;
     const line = rawLine.replace(/\r/g, '').trim();
     if (!line) return;
     const warn = (message) => warnings.push({ line: lineNo, text: line, message });
+    const under = lastEntry;
+    lastEntry = null;
+
+    const times = readTimesLine(line);
+    if (times) {
+      if (skipping) return;
+      if (!under) { warn('Rest / set times go right under their exercise line — ignored'); return; }
+      for (const e of applyTimes(under, times)) warn(e);
+      return;
+    }
 
     const header = parseDatePrefix(line, { today });
     if (header) {
@@ -339,6 +402,7 @@ export function parseImport(text, { unit = 'kg', today = todayISO() } = {}) {
       current.entries.push({ exerciseId: customId(name), name, sets });
       warn(`"${name}" isn't in the exercise list — saved as a custom exercise`);
     }
+    lastEntry = current.entries[current.entries.length - 1];
   });
   finish();
   return { sessions, warnings };
@@ -379,6 +443,8 @@ export function formatText(sessions, unit) {
     for (const e of s.entries || []) {
       if (!e.sets || !e.sets.length) continue;
       lines.push(`${exerciseName(e.exerciseId, e.name)} ${formatSetText(e.sets)}`);
+      const times = timesText(e.sets);
+      if (times) lines.push(`  ${times}`); // §19.1: indented, right under its exercise
     }
     if (s.note) for (const n of String(s.note).split('\n')) lines.push(`Note: ${n}`);
     return lines.join('\n');

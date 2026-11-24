@@ -1,5 +1,5 @@
 // Offline service worker. Bump CACHE on every deploy so installed phones pick up the new files.
-const CACHE = 'ppl-v7';
+const CACHE = 'ppl-v8';
 
 // Every file in public/ (keep in sync when files are added or removed).
 const PRECACHE = [
@@ -17,6 +17,7 @@ const PRECACHE = [
   './js/program.js',
   './js/progression.js',
   './js/store.js',
+  './js/timers.js',
   './js/units.js',
   './js/ui/chart-ui.js',
   './js/ui/data.js',

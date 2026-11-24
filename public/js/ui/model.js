@@ -1,7 +1,10 @@
 // State-derived helpers shared by the screens. No rules live here: everything is a thin combination of the
 // logic modules (program.js decides plans and cycle positions, progression.js decides suggestions).
 
-import { DAYS, DAY_ORDER, ROTATION, EXERCISES, MAIN_LIFTS, SLOTS, getDayPlan, daySlotKeys, cyclePosition, roleOf } from '../program.js';
+import {
+  DAYS, DAY_ORDER, ROTATION, EXERCISES, MAIN_LIFTS, getDayPlan, daySlotKeys, cyclePosition, roleOf, supersetPairs, exerciseName,
+} from '../program.js';
+import { occurrencesOf } from '../progression.js';
 import { sortByDate } from '../dates.js';
 
 /** The plan options from the saved settings. */
@@ -89,18 +92,42 @@ export function roleName(exerciseId, name, role, rx) {
 }
 
 /**
- * The superset partner of a plan item: the other exercise of a combo slot, else the item in the partner slot
- * (so the second Lateral raise pairs with the second triceps slot even when both triceps picks are the same).
+ * The superset partner of a plan item (`program.supersetPairs`: the other exercise of a combo slot, else the item in
+ * the partner slot — so the second Lateral raise pairs with the second triceps slot even when both triceps picks are
+ * the same).
  * @param {{items: Array<object>}} plan
- * @param {object} item
+ * @param {object} item an item of that plan
  * @returns {object|null}
  */
 export function partnerOf(plan, item) {
   if (!item || !item.supersetWith) return null;
-  const sameSlot = plan.items.filter((x) => x.slotKey === item.slotKey && x !== item);
-  if (sameSlot.length) return sameSlot.find((x) => x.exerciseId === item.supersetWith) || sameSlot[0];
-  const slotKey = SLOTS[item.slotKey] ? SLOTS[item.slotKey].supersetWith : null;
-  return plan.items.find((x) => x.slotKey === slotKey) || plan.items.find((x) => x.exerciseId === item.supersetWith && x !== item) || null;
+  const pair = supersetPairs(plan).find((p) => p.includes(item));
+  return pair ? pair.find((x) => x !== item) : null;
+}
+
+/**
+ * The superset pairs of a logged workout (§19.3), found from its day's plan (with the current swaps): the entry of each
+ * plan item by exercise and occurrence (§17.1). Entry index → {first: is it a (rounds start here), partner: the other
+ * one's name}; entries outside a pair are not in the map.
+ * @param {object} state
+ * @param {{day: string, entries?: Array<{exerciseId: string, name?: string}>}} session
+ * @returns {Map<number, {first: boolean, partner: string}>}
+ */
+export function sessionPairs(state, session) {
+  const out = new Map();
+  if (!DAYS[session.day]) return out;
+  const entries = session.entries || [];
+  const occ = occurrencesOf(entries);
+  const indexOf = (it) => entries.findIndex((e, k) => e.exerciseId === it.exerciseId && occ[k] === it.occurrence);
+  const nameAt = (k) => exerciseName(entries[k].exerciseId, entries[k].name);
+  for (const [a, b] of supersetPairs(dayPlan(state, session.day))) {
+    const ia = indexOf(a);
+    const ib = indexOf(b);
+    if (ia < 0 || ib < 0) continue;
+    out.set(ia, { first: true, partner: nameAt(ib) });
+    out.set(ib, { first: false, partner: nameAt(ia) });
+  }
+  return out;
 }
 
 /** "2nd", "3rd", "4th" … */

@@ -1,11 +1,12 @@
-// Logged-workout summaries shared by Today and History (§18.3–§18.5): the time line, the exercise lines with their
-// "best" tags, the 🏆 pill, the "Done for today ✓" view and the "Workout saved" sheet.
-// New bests come from analysis.js (computed on the fly, nothing stored); times from dates.js.
+// Logged-workout summaries shared by Today and History (§18.3–§18.5, §19.3): the time line (with the average rest),
+// the exercise lines with their "best" tags and recorded rest / set times, the 🏆 pill, the "Done for today ✓" view and
+// the "Workout saved" sheet. New bests and the average rest come from analysis.js (computed on the fly, nothing
+// stored); times from dates.js.
 
-import { exerciseName, isTimed, roleOf } from '../program.js';
+import { exerciseName, isTimed, roleOf, recordedTimes } from '../program.js';
 import { occurrencesOf } from '../progression.js';
-import { e1rm, trackKey, sessionVolume } from '../analysis.js';
-import { isValidLocalTime, formatTime, minutesBetween, formatDuration, formatDate, weekdayShort } from '../dates.js';
+import { e1rm, trackKey, sessionVolume, restSummary } from '../analysis.js';
+import { isValidLocalTime, formatTime, minutesBetween, formatDuration, formatDate, weekdayShort, formatClock } from '../dates.js';
 import { formatWeight, cleanNumber } from '../units.js';
 import { html, plural, setsLong } from './dom.js';
 import { openSheet } from './sheets.js';
@@ -38,6 +39,34 @@ export function timeLine(s) {
 }
 
 /**
+ * The summary line of a logged workout (§19.3): `timeLine`, plus "· avg rest 2:20" when any rest was recorded.
+ * @param {object} s session
+ * @returns {string}
+ */
+export function summaryLine(s) {
+  const { average, count } = restSummary(s);
+  return count ? `${timeLine(s)} · avg rest ${formatClock(average)}` : timeLine(s);
+}
+
+/**
+ * The muted line under an exercise in History (§19.3): "rest –, 2:41, 3:05 · sets 0:38, 0:40, 0:52" by position from
+ * set 1 ("–" = not recorded), a part with nothing recorded left out. A superset's first exercise starts with "rounds
+ * with <partner>"; its second shows its set times only (the round's rest is on the first). '' when nothing is recorded.
+ * @param {Array<object>} sets
+ * @param {{first: boolean, partner: string}|null} [pair]
+ * @returns {string}
+ */
+export function timesLine(sets, pair = null) {
+  const { rests, durations } = recordedTimes(sets);
+  const list = (values) => values.map((v) => (v == null ? '–' : formatClock(v))).join(', ');
+  const parts = [];
+  if (rests && !(pair && !pair.first)) parts.push(`rest ${list(rests)}`);
+  if (durations) parts.push(`sets ${list(durations)}`);
+  if (!parts.length) return '';
+  return (pair && pair.first ? [`rounds with ${pair.partner}`, ...parts] : parts).join(' · ');
+}
+
+/**
  * "🏆 1 new best" / "🏆 2 new bests" pill, or nothing.
  * @param {Array<object>} bests
  */
@@ -53,17 +82,22 @@ function entryKeys(s) {
 }
 
 /**
- * One line per logged exercise — "Squat [best]  82.5 kg × 5, 5, 7" — with a "best" tag on the tracks in `bests`.
+ * One line per logged exercise — "Squat [best]  82.5 kg × 5, 5, 7" — with a "best" tag on the tracks in `bests`, and
+ * (`times`, History) the muted rest / set times line under it.
  * @param {object} s session
  * @param {'kg'|'lb'} unit
  * @param {Array<{exerciseId: string, role: string, occurrence: number}>} [bests]
+ * @param {{times?: Map<number, {first: boolean, partner: string}>|null}} [opts] times: the session's superset pairs
+ *   by entry index (`sessionPairs`); null = no times lines
  */
-export function entryLines(s, unit, bests = []) {
+export function entryLines(s, unit, bests = [], { times = null } = {}) {
   const best = new Set(bests.map((b) => trackKey(b.exerciseId, b.role, b.occurrence)));
   const keys = entryKeys(s);
-  return (s.entries || []).map((e, i) => (e.sets && e.sets.length
-    ? html`<div class="hline"><span>${exerciseName(e.exerciseId, e.name)}${best.has(keys[i]) ? html` <i class="best-tag">best</i>` : ''}</span> <span>${setsLong(e.sets, unit, isTimed(e.exerciseId))}</span></div>`
-    : ''));
+  return (s.entries || []).map((e, i) => {
+    if (!e.sets || !e.sets.length) return '';
+    const line = times ? timesLine(e.sets, times.get(i) || null) : '';
+    return html`<div class="hline"><span>${exerciseName(e.exerciseId, e.name)}${best.has(keys[i]) ? html` <i class="best-tag">best</i>` : ''}</span> <span>${setsLong(e.sets, unit, isTimed(e.exerciseId))}</span></div>${line ? html`<p class="restline">${line}</p>` : ''}`;
+  });
 }
 
 // ---------------------------------------------------------------- Done for today (§18.4)
@@ -82,7 +116,7 @@ export function doneMarkup({ today, unit, banner, cards, next }) {
     </header>
     ${banner}
     ${cards.map(({ s, pos, bests }) => html`<article class="card donecard" aria-label="Day ${pos} of 6 · ${dayName(s.day)}">
-      <div class="ex-head"><div class="ex-title"><h2>Day ${pos} of 6 · ${dayName(s.day)}</h2><p class="cap">${timeLine(s)}${s.offDay ? ' · off day' : ''}</p></div>${bestsPill(bests)}</div>
+      <div class="ex-head"><div class="ex-title"><h2>Day ${pos} of 6 · ${dayName(s.day)}</h2><p class="cap">${summaryLine(s)}${s.offDay ? ' · off day' : ''}</p></div>${bestsPill(bests)}</div>
       <div class="lines">${entryLines(s, unit, bests)}</div>
       ${s.note ? html`<p class="sum note-line">Note: ${s.note}</p>` : ''}
       <div class="hist-actions"><button type="button" class="btn" data-act="edit-done" data-id="${s.id}">Edit</button></div>
@@ -115,17 +149,20 @@ function bestLine(s, b, unit) {
 
 /**
  * The sheet after saving a new workout: 🎉 "New best!" with one line per best, or "Workout saved ✓"; tiles for the
- * duration (when both times exist), exercises and weight lifted; what's next. Nice / Escape close it.
+ * duration (when both times exist), exercises, weight lifted and the average rest (when any was recorded, §19.3);
+ * what's next. Nice / Escape close it.
  * @param {{session: object, bests: Array<object>, unit: 'kg'|'lb', next: {position: number, dayId: string}, fromTomorrow: boolean}} opts
  * @returns {{el: HTMLElement, close: () => void}}
  */
 export function openSavedSheet({ session, bests, unit, next, fromTomorrow }) {
   const { start, end } = timesOf(session);
   const count = (session.entries || []).length;
+  const rest = restSummary(session);
   const tiles = [
     start && end && minutesBetween(start, end) >= 0 ? [formatDuration(minutesBetween(start, end)), clockRange(start, end)] : null,
     [String(count), count === 1 ? 'exercise' : 'exercises'],
     [formatWeight(Math.round(sessionVolume(session)), unit, { grouped: true }), 'lifted'],
+    rest.count ? [formatClock(rest.average), 'avg rest'] : null,
   ].filter(Boolean);
   const sheet = openSheet({
     title: 'Workout saved',
@@ -134,7 +171,7 @@ export function openSavedSheet({ session, bests, unit, next, fromTomorrow }) {
     body: html`${bests.length
       ? html`<div class="party" aria-hidden="true">🎉</div><h2 class="cel-title">New best!</h2>${bests.map((b) => bestLine(session, b, unit))}`
       : html`<h2 class="cel-title">Workout saved ✓</h2>`}
-      <div class="sumgrid">${tiles.map(([value, label]) => html`<div><b>${value}</b><span>${label}</span></div>`)}</div>
+      <div class="sumgrid${tiles.length > 3 ? ' two-rows' : ''}">${tiles.map(([value, label]) => html`<div><b>${value}</b><span>${label}</span></div>`)}</div>
       <p class="next">Next: <b>Day ${next.position} · ${dayName(next.dayId)}</b>${fromTomorrow ? ' — from tomorrow' : ''}</p>
       <button type="button" class="save" data-act="nice" data-autofocus>Nice</button>`,
   });

@@ -2,11 +2,17 @@
 
 import { sortByDate, isValidLocalTime } from './dates.js';
 import { convertWeight, barWeight, isValidBarWeight, isValidStep } from './units.js';
-import { roleOf } from './program.js';
+import { roleOf, isRecordedRest, isRecordedDuration } from './program.js';
 import { baselineKey, isBaselineWeight, occurrencesOf } from './progression.js';
 
 /** localStorage key for the whole app state. */
 export const STORAGE_KEY = 'ppl-tracker-v1';
+
+/** What the phone's browser storage is taken to hold (§19.4): about 5 MB, counted in characters. */
+export const STORAGE_QUOTA = 5 * 1024 * 1024;
+
+/** Above this share of `STORAGE_QUOTA` the Data screen warns that storage is nearly full (§19.4). */
+export const STORAGE_NEARLY_FULL = 0.8;
 
 /**
  * A fresh default state. `baselines` holds set weights keyed by `baselineKey(exerciseId, role, occurrence)`;
@@ -60,19 +66,70 @@ const validSteps = (raw) => (isObject(raw)
 /** Workout time fields (§18.3): optional local wall-clock strings "YYYY-MM-DDTHH:MM". */
 const TIME_FIELDS = ['startedAt', 'finishedAt'];
 
-/** A stored session with an id, without unusable workout times (each time checked on its own). */
+/** A stored set without unusable recorded times (§19.1); the same object when there is nothing to drop. */
+function validSet(st) {
+  if (!isObject(st)) return st;
+  const badRest = 'rest' in st && !isRecordedRest(st.rest);
+  const badDuration = 'duration' in st && !isRecordedDuration(st.duration);
+  if (!badRest && !badDuration) return st;
+  const out = { ...st };
+  if (badRest) delete out.rest;
+  if (badDuration) delete out.duration;
+  return out;
+}
+
+/** A session's entries with `validSet` applied; the same array when nothing changed. */
+function validEntries(entries) {
+  if (!Array.isArray(entries)) return entries;
+  let changed = false;
+  const out = entries.map((e) => {
+    if (!isObject(e) || !Array.isArray(e.sets)) return e;
+    const sets = e.sets.map(validSet);
+    if (sets.every((st, i) => st === e.sets[i])) return e;
+    changed = true;
+    return { ...e, sets };
+  });
+  return changed ? out : entries;
+}
+
+/**
+ * A stored session with an id, without unusable workout times (each time checked on its own) or recorded set times.
+ * Unchanged sessions are returned as they are; the input is never mutated.
+ */
 function validSession(s) {
   const bad = TIME_FIELDS.filter((k) => k in s && !isValidLocalTime(s[k]));
-  if (s.id && !bad.length) return s;
+  const entries = validEntries(s.entries);
+  if (s.id && !bad.length && entries === s.entries) return s;
   const out = s.id ? { ...s } : { ...s, id: newId() };
   for (const k of bad) delete out[k];
+  if (entries !== s.entries) out.entries = entries;
   return out;
 }
 
 /**
- * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable workout times, baselines
- * and steps; a missing or unusable bar weight becomes the empty bar of the stored unit, 20 kg / 45 lb). Settings
- * the defaults don't list (`restSound`, `startNextOn`, §18) are kept as stored.
+ * The stored draft. Batch 2 kept its rest timer as `draft.rest = {uid, set, startedAt, extra}`; since §19.1 the one
+ * timer is `draft.timer` (`{kind: 'rest', uid, set, startedAt, extra}` or `{kind: 'set', uid, set, startedAt}`), so an
+ * old `draft.rest` becomes a rest timer (a missing `extra` is 0) and `draft.rest` goes. Everything else is kept as
+ * stored; whether a timer is still fresh is for the screen to decide (it knows the time).
+ */
+function validDraft(raw) {
+  if (!isObject(raw)) return null;
+  if (!('rest' in raw)) return raw;
+  const { rest, ...draft } = raw;
+  const usable = isObject(rest) && typeof rest.uid === 'string' && Number.isInteger(rest.set) && rest.set >= 0
+    && Number.isFinite(rest.startedAt);
+  if (usable && !isObject(draft.timer)) {
+    const extra = Number.isFinite(rest.extra) && rest.extra > 0 ? rest.extra : 0;
+    draft.timer = { kind: 'rest', uid: rest.uid, set: rest.set, startedAt: rest.startedAt, extra };
+  }
+  return draft;
+}
+
+/**
+ * Fill a partially stored state with defaults (give id-less sessions an id, drop unusable workout times, recorded
+ * set times, baselines and steps; a missing or unusable bar weight becomes the empty bar of the stored unit,
+ * 20 kg / 45 lb). Settings the defaults don't list (`restSound`, `startNextOn`, §18) are kept as stored. A Batch 2
+ * draft's rest timer moves to `draft.timer` (§19.1).
  * @param {unknown} raw
  * @returns {ReturnType<typeof defaultState>}
  */
@@ -88,7 +145,7 @@ export function migrate(raw) {
     settings,
     choices: isObject(raw.choices) ? { ...raw.choices } : {},
     sessions,
-    draft: isObject(raw.draft) ? raw.draft : null,
+    draft: validDraft(raw.draft),
     baselines: validBaselines(raw.baselines),
     steps: validSteps(raw.steps),
   };
@@ -117,6 +174,19 @@ export function load(storage) {
   if (isObject(parsed)) return migrate(parsed);
   try { storage.setItem(`${STORAGE_KEY}-corrupt-${Date.now()}`, raw); } catch { /* storage full: nothing more we can do */ }
   return defaultState();
+}
+
+/**
+ * How much of the phone's storage the app uses (§19.4): `used` = the stored state's key + JSON length in characters
+ * (0 when nothing is stored), `quota` = `STORAGE_QUOTA`, `ratio` = used / quota.
+ * @param {Storage} storage
+ * @returns {{used: number, quota: number, ratio: number}}
+ */
+export function storageUse(storage) {
+  let value = null;
+  try { value = storage.getItem(STORAGE_KEY); } catch { value = null; }
+  const used = value == null ? 0 : STORAGE_KEY.length + String(value).length;
+  return { used, quota: STORAGE_QUOTA, ratio: used / STORAGE_QUOTA };
 }
 
 /**
