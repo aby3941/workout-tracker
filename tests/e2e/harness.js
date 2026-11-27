@@ -875,6 +875,11 @@ export async function openSession({ server, viewport = IPHONE, colorScheme = 'li
       if (blockServer) server.setBlocked(offline);
       trail.push(`offline=${offline}`);
     },
+    /** Run `source` in every document loaded from here on, before the page's own scripts (e.g. to stub a browser API). */
+    async addInitScript(source) {
+      await send('Page.addScriptToEvaluateOnNewDocument', { source });
+      trail.push('init script added');
+    },
     /**
      * Pin "now" for every document loaded from here on: Date starts at this local date-time
      * and advances normally (`frozen: true`: it stands still until `advanceClock`). Takes effect on the next

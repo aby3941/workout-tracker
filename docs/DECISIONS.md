@@ -155,3 +155,20 @@ The rules were written first and agreed before any code. Each change went throug
 3. an independent review that fixed bugs and added a test for each one.
 
 The screens were built only after the owner approved the design mocks.
+
+## Owner change 24/11/2026
+
+| Decision | Why |
+|---|---|
+| **The workout clock starts at the first warm-up tick** (else the first Start tap, else the first reps typed — whichever comes first) | The owner counts the warm-up as part of the workout. Unticking or ticking again never moves the start; the 4-hour rule still applies. |
+
+## Owner change 27/11/2026 — Start workout + keep the screen on (SPEC §20)
+
+| Decision | Why |
+|---|---|
+| **A "Start workout" button** sits under Today's heading (and its "Last workout" line) on a new workout for today — also in "Start it now instead" — until the workout has started (no start in this sitting, the 4-hour rule). Tapping it sets the start to now and saves the draft straight away, so a reload keeps it with no reps; the button then gives way to "Started 18:40 · 0 min so far". It uses the same start rule as the warm-up tick, Start tap and reps (`canStart` + `startClock` in `ui/today.js`), so editing a saved workout or a workout for another date shows no button | The owner wants to start the clock on purpose, before the warm-up. One rule for every way of starting means the button can never disagree with the backup. |
+| **Backup = option A**: without the button the workout still starts at the first warm-up tick, Start tap or reps typed, whichever comes first; once started nothing moves the start — switching to another workout with "Doing a different workout?" keeps a start from this sitting too | The owner picked option A: a forgotten tap costs nothing, and the times are never moved later than the first thing done. |
+| **The screen stays on while a rest or set timer runs** (`timers.needsWakeLock(timer, settings)`, pure): one screen wake lock (`ui/awake.js`), held while a timer runs, the page is visible and "Keep screen on during timers" is on; released on Skip, Cancel, Save, when the timer goes (4 hours) or the switch goes off. iPhone drops the lock when the app is hidden, so it is asked for again when the app shows. Errors are ignored. `app.js` checks it after every save and every redraw, so no path that changes the timer or the setting is missed; when nothing changed the lock is left alone. Start workout alone does not keep the screen on | Between sets the phone sits on the bench and auto-lock hid the timer. Only while a timer runs, so the battery cost stays small. |
+| **"Keep screen on during timers"** in Data → Settings, under "Rest timer sound": a switch, on by default (`settings.keepAwake`, missing = on), with "Uses a little more battery while a timer runs." and, when the browser has no Wake Lock API, "This browser can't keep the screen on." | The owner can turn it off; the note says why it might do nothing. |
+| `sw.js` cache `ppl-v9`, PRECACHE = the real files (adds `./js/ui/awake.js`) | Installed phones pick up the new version. |
+| *Review 27/11:* **after midnight with Today open, a draft that hasn't started moves to the new day at once** (the same rule a redraw already applied, `movesToToday` in `ui/today.js`): before, only an untouched form did, so a draft with just a note or a swap kept the old date until the next redraw, the Start workout button vanished at midnight and reps typed then started no clock | The button and the start rule must follow the day the workout is done on. |

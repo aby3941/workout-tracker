@@ -471,7 +471,7 @@ Owner: "I added an exercise, nothing happened" / "tried swapping hanging leg rai
 
 ### 18.3 Workout times
 - Sessions gain optional `startedAt` and `finishedAt`: local wall-clock strings `"YYYY-MM-DDTHH:MM"` (no time zone, like dates). New helpers in dates.js: `nowLocal(now = new Date())`, `formatTime(local)` → `"18:42"`, `minutesBetween(a, b)`, `formatDuration(min)` → `"52 min"` / `"1 h 5 min"`.
-- `draft.startedAt` is set once, at the earlier of the first Start tap (§19.2) and the first reps value entered *(amended 24/11/2026 by the Batch 3 review: the first set's time belongs to the workout)*. Save sets `finishedAt` to now for new workouts; editing an old workout keeps its times.
+- `draft.startedAt` is set once, at the earliest of the first warm-up tick (§18.2), the first Start tap (§19.2) and the first reps value entered *(amended 24/11/2026: the warm-up is part of the workout — owner's choice — and the first set's time belongs to it too)*. Save sets `finishedAt` to now for new workouts; editing an old workout keeps its times.
 - Today header (under the heading): before starting — "Last workout: Tue 18/11 at 19:41" (the time it was saved, i.e. `finishedAt` — the owner asked for "the time which last workout was added") (or "Last workout: Tue 18/11" when it has no time; nothing when there is no history); once started — "Started 18:42 · 23 min so far" (minutes update each minute).
 - History cards show "18:42 – 19:34 · 52 min"; workouts without times show "Time not recorded".
 - Backups keep times: CSV gains optional columns `started_at`, `finished_at` (repeated on each row like `note`; old backups without them still import). The text format gains an optional line `Time: 18:42–19:34` per session (parsed back; missing = no times). Round trips must preserve times.
@@ -537,3 +537,17 @@ Owner: "the rest time should be recorded too, and a next-exercise start button �
 
 ### 19.5 Housekeeping
 - `sw.js` → `ppl-v8`, PRECACHE equal to the real files. DECISIONS.md rows; README features and test counts.
+
+## 20. Start workout button + keep the screen on during timers (owner, 27/11/2026)
+
+### 20.1 Start workout
+- Today shows a prominent button **`Start workout`** (accessible name exactly that) directly under the heading when the form is a **new workout for today** (not editing, not the Done view; it also appears in the "Start it now instead" form) and the workout hasn't started (no live `startedAt`, §18.3 4-hour rule).
+- Tapping it sets `draft.startedAt = nowLocal()`, saves the draft (it survives a reload even with no reps), and the button is replaced by the usual "Started HH:MM · N min so far" line. The "Last workout: …" line may stay above or below it.
+- **Backup (owner's option A):** if the button isn't tapped, the workout still starts at the earliest of the first warm-up tick, the first Start tap (§19.2) and the first reps typed. Once started, nothing moves the start.
+- It starts no rest/set timer and does not keep the screen on by itself.
+
+### 20.2 Keep the screen on while a timer runs
+- `timers.needsWakeLock(timer, settings)` (pure) → `true` when a rest or set timer exists (`timer` non-null) and `settings.keepAwake !== false`; otherwise `false`.
+- While it is true and the page is visible, the app holds a screen wake lock (`navigator.wakeLock.request('screen')`); when it becomes false (Skip, Cancel, Save, the last timer ends, the setting switched off) it releases it. The browser drops the lock when the page is hidden, so the app requests it again on `visibilitychange` → visible if still needed. One lock at a time; errors (e.g. NotAllowedError) are ignored silently.
+- Setting **"Keep screen on during timers"** in Data → Settings: `role="switch"`, on by default (`settings.keepAwake`, missing = on; `defaultState()` unchanged), with the note "Uses a little more battery while a timer runs." When the browser has no `navigator.wakeLock`, the switch still shows and the note adds "This browser can't keep the screen on."
+- `sw.js` cache → `ppl-v9`.

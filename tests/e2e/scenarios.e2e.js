@@ -3595,6 +3595,196 @@ export const scenarios = [
   // ------------------------------------------------------------------ Batch 3 review (24/11/2026)
 
   {
+    id: 'start-workout-button',
+    title: 'Start workout (§20.1): the button under the heading starts the clock (18:40), survives a reload with no reps, disappears once started; later warm-up ticks, Start set and reps keep 18:40; no button when editing or on the Done view; it returns in "Start it now instead"',
+    timeout: 120000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '18:40' });
+      await expectToday(t, 6, 'Legs');
+      t.step('The button is there before anything is logged');
+      await t.waitForRole('button', 'Start workout', { within: 'document' });
+      await t.tap('Start workout', { within: 'document' });
+      await waitStored(t, 'draft.startedAt 18:40 from Start workout', (s) => s.draft?.startedAt === at(D0, '18:40'));
+      await t.waitForText(`Started 18:40 ${DOT} 0 min so far`);
+      await t.waitGone('button', 'Start workout');
+      t.step('A reload keeps the started workout (no reps yet) and shows no button');
+      await advance(t, 60);
+      await reloadApp(t);
+      await expectToday(t, 6, 'Legs');
+      await t.waitForText(`Started 18:40 ${DOT} 1 min so far`);
+      expect(!(await t.text({ within: 'document' })).includes('Start workout'), 'No "Start workout" once the workout has started');
+      t.step('Warm-up tick, Start set 1 and reps keep the start');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await advance(t, 240);
+      await tickWarmup(t, 'Squat', 0);
+      await t.tap('Start set 1', { within: SQ });
+      await advance(t, 40);
+      await commitReps(t, SQ, 1, 5);
+      const st = await waitStored(t, 'set 1 committed', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.reps === 5);
+      expectEqual(st.draft.startedAt, at(D0, '18:40'), 'Start workout (18:40) wins over the later warm-up tick, Start tap and reps');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      expectEqual(savedSession(await t.getJSON(STORAGE_KEY), D0, 'legs')?.startedAt, at(D0, '18:40'), 'Saved start is the Start workout tap');
+      t.step('Done view: no button; "Start it now instead" brings it back for the next workout');
+      await t.waitForHeading('Done for today ✓');
+      expect(!(await t.text({ within: 'document' })).includes('Start workout'), 'No "Start workout" on the Done view');
+      await t.click('Start it now instead', { within: 'document' });
+      await t.waitForRole('button', 'Start workout', { within: 'document' });
+      t.step('Editing an old workout shows no button');
+      await goTab(t, 'History');
+      await t.click('Edit', { within: 'document', index: 0 });
+      await t.waitForText('Editing');
+      expect(!(await t.text({ within: 'document' })).includes('Start workout'), 'No "Start workout" while editing');
+    },
+  },
+
+  {
+    id: 'start-workout-after-midnight-draft',
+    title: 'Start workout after midnight (§20.1 + §18.3, review 27/11): a draft touched at 23:58 (a note) but not started moves to the new day as midnight passes with the app open — "Start workout" stays, and tapping it starts the new day\'s workout',
+    timeout: 60000,
+    async run(t) {
+      const D1 = addDays(D0, 1);
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '23:58' });
+      await expectToday(t, 6, 'Legs');
+      t.step('A note makes the form a draft; nothing is started');
+      await t.type('Note', 'late one');
+      await waitStored(t, 'draft with the note', (s) => s.draft?.note === 'late one' && !s.draft.startedAt);
+      t.step('Midnight passes with the app open');
+      await advance(t, 150); // 00:00:30 the next day
+      await t.waitForText(`${weekday(D1)} ${dmy(D1)}`);
+      await t.waitForRole('button', 'Start workout', { within: 'document' });
+      await t.tap('Start workout', { within: 'document' });
+      const st = await waitStored(t, 'the workout started on the new day', (s) => s.draft?.startedAt === at(D1, '00:00'));
+      expectEqual([st.draft.date, st.draft.note], [D1, 'late one'], 'The draft moved to the new day and kept its note');
+    },
+  },
+
+  {
+    id: 'keep-screen-on-timers',
+    title: 'Keep the screen on (§20.2): a wake lock is held only while a rest or set timer runs (rest after reps, set after Start, released on Skip / Save), re-requested when the page becomes visible again, and never when "Keep screen on during timers" is off',
+    timeout: 120000,
+    async run(t) {
+      await t.addInitScript(`(() => {
+        const log = { requests: 0, releases: 0, active: 0 };
+        window.__wakeLog = log;
+        const wakeLock = { request: async (type) => {
+          if (type !== 'screen') throw new Error('type ' + type);
+          log.requests++; log.active++;
+          let released = false; const handlers = [];
+          const sentinel = { type: 'screen', get released() { return released; }, onrelease: null,
+            addEventListener: (n, f) => { if (n === 'release') handlers.push(f); },
+            removeEventListener: () => {},
+            release: async () => { if (released) return; released = true; log.releases++; log.active--; for (const f of handlers) f(); if (sentinel.onrelease) sentinel.onrelease(); } };
+          window.__wakeSentinels = (window.__wakeSentinels || []).concat(sentinel);
+          return sentinel; } };
+        Object.defineProperty(navigator, 'wakeLock', { value: wakeLock, configurable: true });
+      })();`);
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '18:40' });
+      await expectToday(t, 6, 'Legs');
+      const wake = () => t.evaluate(() => ({ ...window.__wakeLog }));
+      const waitWake = async (what, check) => {
+        const until = Date.now() + 4000; let last;
+        while (Date.now() < until) { last = await wake(); if (check(last)) return last; await sleep(80); }
+        throw new E2EError(`${what}: wake lock log ${JSON.stringify(last)}`);
+      };
+      expectEqual((await wake()).active, 0, 'No wake lock before any timer');
+      t.step('Start workout alone does not keep the screen on');
+      await t.tap('Start workout', { within: 'document' });
+      await sleep(300);
+      expectEqual((await wake()).active, 0, 'Start workout starts no timer and no wake lock');
+      t.step('Reps → rest timer → wake lock held');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 1, 5);
+      await waitWake('wake lock while resting', (l) => l.active === 1);
+      t.step('Start set 2 → set timer → still exactly one lock');
+      await advance(t, 120);
+      await t.tap('Start set 2', { within: SQ });
+      await sleep(300);
+      expectEqual((await wake()).active, 1, 'One lock while the set timer runs');
+      t.step('Hidden page drops the lock (browser); visible again → requested again');
+      const before = (await wake()).requests;
+      await t.evaluate(() => {
+        for (const s of window.__wakeSentinels || []) if (!s.released) s.release();
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await waitWake('lock requested again after becoming visible', (l) => l.active === 1 && l.requests > before);
+      t.step('Commit set 2 → rest → Skip → released');
+      await advance(t, 40);
+      await commitReps(t, SQ, 2, 5);
+      await advance(t, 5); // timer buttons ignore taps for 400 ms after a commit (Batch 2), so let the frozen clock move first
+      await t.tap('Skip', { within: { role: 'timer', name: 'Rest timer' } });
+      await waitWake('released after Skip', (l) => l.active === 0);
+      t.step('Setting off → no lock even with a timer; back on → lock');
+      await goTab(t, 'Data');
+      await t.waitForRole('switch', 'Keep screen on during timers', { within: 'document' });
+      expectEqual(await switchState(t, 'Keep screen on during timers'), true, '"Keep screen on during timers" is on by default');
+      await t.waitForText('Uses a little more battery while a timer runs.');
+      await t.click('Keep screen on during timers', { role: 'switch', within: 'document' });
+      await waitStored(t, 'settings.keepAwake = false', (s) => s.settings?.keepAwake === false);
+      await goTab(t, 'Today');
+      await openCard(t, 'Squat');
+      await commitReps(t, SQ, 3, 6);
+      await sleep(400);
+      expectEqual((await wake()).active, 0, 'No wake lock while the setting is off, even with a rest timer');
+      await goTab(t, 'Data');
+      await t.click('Keep screen on during timers', { role: 'switch', within: 'document' });
+      await waitStored(t, 'settings.keepAwake = true', (s) => s.settings?.keepAwake === true);
+      await waitWake('lock taken again when switched back on with a rest timer running', (l) => l.active === 1);
+      t.step('Save → no timer → released');
+      await goTab(t, 'Today');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      await waitWake('released after Save', (l) => l.active === 0);
+    },
+  },
+
+  {
+    id: 'warmup-tick-starts-workout',
+    title: 'The workout clock starts at the first warm-up tick (owner 24/11/2026): tick at 08:50 → "Started 08:50"; a later Start tap and reps keep 08:50; unticking does not reset it; saved times start at 08:50',
+    timeout: 120000,
+    async run(t) {
+      await t.enableTouch();
+      await bootFrozen(t, seedState(SEED_WEEK), { time: '08:50' });
+      await expectToday(t, 6, 'Legs');
+      const SQ = card('Squat');
+      await openCard(t, 'Squat');
+      t.step('Ticking the first warm-up set starts the workout');
+      await tickWarmup(t, 'Squat', 0);
+      await waitStored(t, 'draft.startedAt 08:50 from the first warm-up tick', (s) => s.draft?.startedAt === at(D0, '08:50'));
+      await t.waitForText(`Started 08:50 ${DOT} 0 min so far`);
+      t.step('Unticking and ticking again later do not move the start');
+      await advance(t, 120);
+      await tickWarmup(t, 'Squat', 0);
+      await tickWarmup(t, 'Squat', 0);
+      await tickWarmup(t, 'Squat', 1);
+      let st = await waitStored(t, 'warm-up ticks stored', (s) => Array.isArray(s.draft?.warmup?.main) && s.draft.warmup.main.length === 2);
+      expectEqual(st.draft.startedAt, at(D0, '08:50'), 'Later warm-up ticks keep the first start');
+      t.step('"Start set 1" and the first reps keep the warm-up start');
+      await advance(t, 480);
+      await t.tap('Start set 1', { within: SQ });
+      await waitOnlyTimer(t, 'Set timer', 'Squat', 1, 'After "Start set 1"');
+      await advance(t, 40);
+      await commitReps(t, SQ, 1, 5);
+      st = await waitStored(t, 'set 1 committed', (s) => entryOf(s.draft, 'squat')?.sets?.[0]?.reps === 5);
+      expectEqual(st.draft.startedAt, at(D0, '08:50'), 'The Start tap (09:00) and reps (09:00) keep the warm-up start (08:50)');
+      await t.click('Save workout', { within: 'document' });
+      await closeSavedSheet(t);
+      const saved = savedSession(await t.getJSON(STORAGE_KEY), D0, 'legs');
+      expectEqual(saved?.startedAt, at(D0, '08:50'), 'The saved workout starts at the first warm-up tick');
+    },
+  },
+
+  {
     id: 'review-b3-start-tap-starts-workout',
     title: 'The workout starts at the first Start tap or reps typed, whichever is first (§18.3, review): "Start set 1" at 09:00 → "Started 09:00", reps at 09:02:30 keep 09:00; a set started at 23:59 keeps its day past midnight and both times',
     timeout: 120000,

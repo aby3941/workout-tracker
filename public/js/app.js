@@ -1,4 +1,4 @@
-// Boot, state, tab routing, saving, the service worker and app-wide banners.
+// Boot, state, tab routing, saving, the service worker, app-wide banners and keeping the screen on during timers.
 
 import { load, save, storageUse } from './store.js';
 import { todayISO } from './dates.js';
@@ -10,6 +10,8 @@ import { renderData } from './ui/data.js';
 import { openStartingWeights } from './ui/pickers.js';
 import { toast } from './ui/sheets.js';
 import { focusKey, restoreFocus } from './ui/dom.js';
+import { draftTimer, needsWakeLock } from './timers.js';
+import { watchAwake, syncAwake } from './ui/awake.js';
 
 const VIEWS = { today: renderToday, plan: renderPlan, progress: renderProgress, history: renderHistory, data: renderData };
 const DRAFT_DELAY = 300;
@@ -30,6 +32,7 @@ let persistAsked = false;
 function saveNow() {
   clearTimeout(saveTimer);
   saveTimer = 0;
+  syncAwake();
   if (save(state, storage)) return true;
   setTimeout(() => toast("Couldn't save on this phone (storage full?) — export a backup now"), 0);
   return false;
@@ -49,6 +52,7 @@ function render({ keepScroll = true } = {}) {
   }
   window.scrollTo(0, keepScroll ? y : 0);
   restoreFocus(root, key);
+  syncAwake();
 }
 
 /** The context every screen receives. */
@@ -67,6 +71,7 @@ const ctx = {
   saveSoon() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, DRAFT_DELAY);
+    syncAwake();
   },
   saveNow,
   render,
@@ -114,5 +119,8 @@ if ('serviceWorker' in navigator) {
 
 // ---------------------------------------------------------------- boot
 
+// §20.2: the screen stays on while a rest or set timer runs (unless switched off). Every change of the draft's timer or
+// the setting is saved (`saveNow` / `saveSoon`) or drawn (`render`), and each of those checks the lock again.
+watchAwake(() => needsWakeLock(draftTimer(state.draft, Date.now()), state.settings));
 render({ keepScroll: false });
 if (!state.settings.setupDone && state.sessions.length === 0) openStartingWeights(ctx, { firstRun: true });

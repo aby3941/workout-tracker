@@ -25,14 +25,16 @@ An offline iPhone home-screen web app for the r/Fitness **"A Linear Progression 
 - **At the gym:** committing a set's reps starts a rest timer inside the card, right under that set ("Rest 0:48 · aim 1–3 min"); it says when you're ready and when you're over, beeps once (switch it off in Data → Settings), and +30 s / Skip adjust it. It survives switching tabs and reopening the app.
 - **Recorded rest and set times:** the rest box has a **Start set 2** button (or **Start round 2 · Triceps pushdown**, or **Start next exercise**): tapping it saves the rest on that set and starts a set timer, which stops when you commit the reps. Each set shows "rest 2:41 · set 0:38" under it; History lists them per exercise with the average rest, and the backups keep them. With no timer running, the next set has a small **Start set N** button.
 - **Supersets as one:** after a pushdown set the paired lateral-raise set starts by itself, with no rest in between; there is one rest per round.
-- **Workout times:** the start (the first Start tap or reps typed, whichever comes first) and finish (Save) are kept with each workout, shown in History ("18:42 – 19:34 · 52 min") and in the backups. Today shows "Last workout: Wed 18/11 at 19:41", then "Started 18:42 · 23 min so far". A workout counts as one sitting of up to 4 hours: a draft saved the next morning keeps its start but no finish. Workouts logged before this have no times ("Time not recorded").
+- **Start workout:** a big **Start workout** button under Today's heading starts the workout clock on purpose (it survives a reload before any reps); it turns into "Started 18:40 · 0 min so far". Forget it and the workout still starts at the first warm-up tick, Start tap or reps typed. It starts no timer.
+- **Screen stays on while a timer runs:** during a rest or set timer the app keeps the iPhone screen awake (Screen Wake Lock), and lets it sleep again after Skip, Cancel or Save. Switch it off in Data → Settings.
+- **Workout times:** the start (the Start workout tap, else the first warm-up tick, Start tap or reps typed, whichever comes first) and finish (Save) are kept with each workout, shown in History ("18:42 – 19:34 · 52 min") and in the backups. Today shows "Last workout: Wed 18/11 at 19:41", then "Started 18:42 · 23 min so far". A workout counts as one sitting of up to 4 hours: a draft saved the next morning keeps its start but no finish. Workouts logged before this have no times ("Time not recorded").
 - **Done for today:** after saving, Today shows "Done for today ✓" with the day's workout until midnight, then the next one. "Start it now instead" is there for a double day.
 - **New bests:** saving celebrates any exercise that beat its heaviest weight (plank: longest hold) with a "Workout saved" summary; 🏆 and "best" tags mark them on Today and in History.
 - **Set weight:** sets the weight for any exercise's next session, once. After that the rules take over. The same sheet sets the exercise's own weight step (it stays until you change it), and the same list sets starting weights on first open.
 - **Swaps:** the substitutions from the Reddit post, plus custom names. Also goals (standard / strength / endurance / cutting) and an optional ab add-on. "+ Add exercise" searches the list as you type; the new card opens on screen.
 - **Progress:** two views. *All charts* has a card per exercise; *One at a time* shows one big chart plus the full exercise list. Main lifts chart working weight and estimated 1-rep max; accessories chart weight and total reps against the "add weight" target. Also a watch list, personal bests and weekly volume.
 - **Backup:** export a CSV through the iOS share sheet (workout times included); "Copy as text" copies a readable version. Import takes that CSV, or free text like `Deadlift 100x5 x3`, and shows a preview with warnings by line number first.
-- **Settings:** kg by default with an lb switch that converts saved weights; the barbell weight (20 kg / 45 lb by default) used for the plates and the warm-up; the rest timer sound. Dates show as DD/MM/YYYY, and typed numeric dates are always read day-first.
+- **Settings:** kg by default with an lb switch that converts saved weights; the barbell weight (20 kg / 45 lb by default) used for the plates and the warm-up; the rest timer sound; "Keep screen on during timers" (on by default; it says so when the browser can't). Dates show as DD/MM/YYYY, and typed numeric dates are always read day-first.
 - **Storage meter:** Data shows how much of the phone's roughly 5 MB the app uses, and warns in amber above 80%. If the phone's storage is full, Save says "Couldn't save on this phone (storage full?) — export a backup now" instead of "Saved".
 
 ## Run it locally
@@ -50,9 +52,9 @@ The service worker (offline mode) works on `127.0.0.1`/`localhost` and on HTTPS.
 
 | Command | What it runs | Needs |
 |---|---|---|
-| `npm test` | 641 unit tests for every logic module (Node's built-in runner) | Node 22+ (developed on 24) |
+| `npm test` | 645 unit tests for every logic module (Node's built-in runner) | Node 22+ (developed on 24) |
 | `TZ=Asia/Kolkata npm test` | the same, in another time zone (date logic must not shift) | |
-| `node tests/e2e/run.js` | 59 end-to-end scenarios in headless Chrome at iPhone size, plus "no outside requests" and "no console errors" | Google Chrome (set `CHROME_PATH` if it isn't in /Applications) |
+| `node tests/e2e/run.js` | 63 end-to-end scenarios in headless Chrome at iPhone size, plus "no outside requests" and "no console errors" | Google Chrome (set `CHROME_PATH` if it isn't in /Applications) |
 | `node tests/e2e/run.js swap offline` | only the scenarios whose id contains those words | |
 | `node tests/e2e/selfcheck.js` | checks the e2e harness itself | |
 
@@ -71,13 +73,15 @@ public/                 ← the deployed site (and only this folder)
     parser.js           free-text import/export
     csv.js              CSV backup format
     store.js            app state, localStorage load/save/migrate, merging imports
-    timers.js           the rest / set timer and what comes next after a set (superset rounds, next exercise)
+    timers.js           the rest / set timer, what comes next after a set (superset rounds, next exercise), and
+                        whether the screen stays on
     analysis.js         Progress numbers: e1RM, series, PBs, new bests, weekly volume, watch list
     charts.js           SVG chart markup (pure)
     html.js             the one HTML escaper
     app.js              boot, routing between tabs, saving, service worker, banners
     ui/                 one module per screen + shared sheets, DOM helpers, chart interaction, the rest and set
-                        timer boxes (rest.js) and workout summaries shared by Today and History (summary.js)
+                        timer boxes (rest.js), workout summaries shared by Today and History (summary.js) and the
+                        screen wake lock (awake.js)
 tests/                  unit tests (*.test.js) and tests/e2e/ (browser tests + harness)
 tools/make-icons.mjs    regenerates every icon + favicon.ico (headless Chrome + sips; not deployed)
 docs/                   SPEC.md, DECISIONS.md, design/ (approved mocks), screenshots/

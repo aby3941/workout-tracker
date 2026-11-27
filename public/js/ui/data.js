@@ -10,6 +10,7 @@ import { exerciseName, isTimed } from '../program.js';
 import { html, setHTML, icon, plural, ago, setsShort } from './dom.js';
 import { openSheet, confirmSheet, toast } from './sheets.js';
 import { historyPositions, dayName } from './model.js';
+import { canKeepAwake } from './awake.js';
 
 // Import box text and the last preview survive re-renders (not saved).
 const ui = { text: '', preview: null, copyText: null };
@@ -182,6 +183,8 @@ export function renderData(root, ctx) {
       <label class="setrow switch-row"><span><span>Rest timer sound</span><span class="muted sub">A short beep when the rest is up</span></span>
         <input type="checkbox" class="switch" role="switch" aria-label="Rest timer sound" data-input="rest-sound" ${state.settings.restSound !== false ? 'checked' : ''}></label>
       <p class="cap ios-note">The beep plays only while the app is open — iPhone doesn't let web apps alert in the background.</p>
+      <label class="setrow switch-row"><span><span>Keep screen on during timers</span><span class="muted sub">Uses a little more battery while a timer runs.</span>${canKeepAwake() ? '' : html`<span class="muted sub">This browser can't keep the screen on.</span>`}</span>
+        <input type="checkbox" class="switch" role="switch" aria-label="Keep screen on during timers" data-input="keep-awake" ${state.settings.keepAwake !== false ? 'checked' : ''}></label>
       <div class="setrow"><span>Dates</span><span class="muted">DD/MM/YYYY (day first)</span></div>
     </div>
 
@@ -213,6 +216,12 @@ export function renderData(root, ctx) {
   root.querySelector('[data-input="rest-sound"]').addEventListener('change', (e) => {
     ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, restSound: e.target.checked } }, { render: false });
     toast(e.target.checked ? 'Rest timer sound on' : 'Rest timer sound off');
+  });
+
+  // Keep screen on during timers (§20.2): on unless switched off; the commit checks the wake lock again (app.js).
+  root.querySelector('[data-input="keep-awake"]').addEventListener('change', (e) => {
+    ctx.commit({ ...ctx.state, settings: { ...ctx.state.settings, keepAwake: e.target.checked } }, { render: false });
+    toast(e.target.checked ? 'Screen stays on during timers' : 'Screen can sleep during timers');
   });
 
   const paste = root.querySelector('[data-input="paste"]');

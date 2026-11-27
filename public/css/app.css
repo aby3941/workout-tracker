@@ -315,6 +315,10 @@ html.sheet-open .toast { bottom: auto; top: calc(env(safe-area-inset-top, 0px) +
              padding: 6px 12px; font-size: 13px; font-weight: 600; min-height: 36px; }
 .startmini::after { content: ''; position: absolute; inset: -4px 0; } /* 44px tap target */
 .ss-link { text-align: center; font-size: 12px; color: var(--ink-2); margin: 4px 0 -4px; }
+/* §20.1: "▶ Start workout" under the heading until the workout has started */
+.start-workout { display: block; width: 100%; border: 0; border-radius: 14px; background: var(--s1); color: #fff; font-size: 16px; font-weight: 600;
+                 padding: 12px 14px; min-height: 52px; margin: 2px 0 10px; }
+.start-workout .go { font-size: .8em; margin-right: 2px; }
 
 .pill.best { background: color-mix(in srgb, var(--warning) 22%, transparent); border-color: transparent; color: var(--ink); }
 .best-tag { font-style: normal; font-size: 10.5px; color: var(--ink); background: color-mix(in srgb, var(--warning) 30%, transparent);

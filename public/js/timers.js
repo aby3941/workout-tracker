@@ -1,4 +1,5 @@
-// The one rest / set timer of a workout and what comes next after a set (§19.2): pure rules, no DOM.
+// The one rest / set timer of a workout, what comes next after a set (§19.2) and whether the screen stays on while it
+// runs (§20.2): pure rules, no DOM.
 // The timer lives in the draft: `draft.timer = {kind: 'rest', uid, set, startedAt (ms), extra (s)}` or
 // `{kind: 'set', uid, set, startedAt}`, where `set` is the 0-based index of the set it sits under. The order sets are
 // done in works on Today's form entries ({uid, sets: [{reps}]}) and the superset pairs on the form as [aUid, bUid]
@@ -24,6 +25,29 @@ export function usableTimer(timer, nowMs) {
   if (kind === 'rest' && (!Number.isFinite(extra) || extra < 0)) return null;
   if (nowMs != null && Math.abs(nowMs - startedAt) > TIMER_MAX_MS) return null;
   return timer;
+}
+
+/**
+ * The timer of a stored draft that is running at `nowMs`: none while the draft edits a saved workout (no timers there,
+ * §19.2) or when `usableTimer` drops it.
+ * @param {unknown} draft
+ * @param {number} nowMs
+ * @returns {ReturnType<typeof usableTimer>}
+ */
+export function draftTimer(draft, nowMs) {
+  if (!draft || typeof draft !== 'object' || draft.editingId) return null;
+  return usableTimer(draft.timer, nowMs);
+}
+
+/**
+ * Whether the screen should stay on (§20.2): while a rest or set timer runs, unless "Keep screen on during timers" is
+ * switched off (`settings.keepAwake`; missing = on).
+ * @param {object|null|undefined} timer the running timer (`draftTimer`), or null
+ * @param {{keepAwake?: boolean}|null|undefined} settings
+ * @returns {boolean}
+ */
+export function needsWakeLock(timer, settings) {
+  return Boolean(timer) && !(settings && settings.keepAwake === false);
 }
 
 /**

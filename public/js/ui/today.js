@@ -1,8 +1,9 @@
 // Today: log the next workout, or edit an old one loaded from History; once today's workout is saved, "Done for
 // today ✓" until midnight (§18.4). The form lives in `state.draft` once the user changes anything (autosaved); until
 // then it is rebuilt from the plan on every render, so swaps, goal and abs changes flow straight in. Suggestions come
-// from progression.js. The draft also holds the workout's start time (`startedAt`), the one rest or set timer (`timer`,
-// §18.1 / §19.2; the sets keep the recorded `rest` and `duration`) and the warm-up ticks (`warmup`, §18.2).
+// from progression.js. The draft also holds the workout's start time (`startedAt`: Start workout, or the first thing
+// done, §20.1), the one rest or set timer (`timer`, §18.1 / §19.2; the sets keep the recorded `rest` and `duration`)
+// and the warm-up ticks (`warmup`, §18.2).
 
 import {
   DAYS, ROTATION, REST, EXERCISES, SLOTS, MISSES_BEFORE_DELOAD, DELOAD_FACTOR, MAIN_REPS, HOLD_GOAL_SECONDS, MAX_WORKOUT_MINUTES,
@@ -24,7 +25,7 @@ import { html, setHTML, icon, plural, setsLong, focusKey, restoreFocus } from '.
 import { openSheet, confirmSheet, toast, keepFocusOnTap } from './sheets.js';
 import { openSwapSheet, openSetWeightSheet } from './pickers.js';
 import { dayPlan, dayName, partnerOf, trackName, historyPositions } from './model.js';
-import { usableTimer, restTaken, setTaken, nextAfter, nextToDo, pairWith } from '../timers.js';
+import { usableTimer, draftTimer, restTaken, setTaken, nextAfter, nextToDo, pairWith } from '../timers.js';
 import {
   restMarkup, restView, updateRest, setTimerMarkup, updateSetTimer, rowStartMarkup, unlockSound, beep, REST_MORE_SECONDS,
 } from './rest.js';
@@ -180,7 +181,7 @@ function currentForm(ctx) {
   const draft = usableDraft(ctx.state, today);
   if (draft) {
     let changed = hadTimer && !draft.timer; // a stale timer was dropped: save that
-    if (!draft.editingId && !draft.dateChosen && compareISO(draft.date, today) < 0 && !draft.entries.some(hasReps) && !liveStart(draft)) {
+    if (movesToToday(draft, today)) {
       draft.date = today;
       delete draft.startedAt;
       changed = true;
@@ -191,6 +192,11 @@ function currentForm(ctx) {
     return draft;
   }
   return freshForm(ctx.state, { date: today, day: nextWorkout(ctx.state.sessions).dayId });
+}
+
+/** A new-workout draft that moves to `today` (see `currentForm`): from an earlier day, date not picked, no reps, not started. */
+function movesToToday(draft, today) {
+  return !draft.editingId && !draft.dateChosen && compareISO(draft.date, today) < 0 && !draft.entries.some(hasReps) && !liveStart(draft);
 }
 
 /**
@@ -335,6 +341,15 @@ function liveStart(form) {
   return age >= 0 && age <= MAX_WORKOUT_MINUTES ? form.startedAt : null;
 }
 
+/**
+ * Whether the workout can be started now (§18.3 / §20.1): a new workout logged on its own date that has not started in
+ * this sitting (`liveStart`). The Start workout button shows exactly then, and the first warm-up tick, Start tap or
+ * reps start the clock only then.
+ */
+function canStart(ctx, form) {
+  return !form.editingId && form.date === ctx.today() && !liveStart(form);
+}
+
 /** Forget an entry's warm-up ticks (its warm-up list changed). */
 function clearWarmupTicks(form, entry) {
   if (form.warmup && form.warmup[entry.uid]) delete form.warmup[entry.uid];
@@ -467,7 +482,7 @@ function formPairs(state, form) {
  */
 function timerScene(state, form, nowMs = Date.now()) {
   const pairs = formPairs(state, form);
-  const timer = form.editingId ? null : usableTimer(form.timer, nowMs);
+  const timer = draftTimer(form, nowMs);
   return { nowMs, pairs, timer, todo: form.editingId || timer ? null : nextToDo(form.entries, pairs, ui.lastTimer) };
 }
 
@@ -657,7 +672,7 @@ function timelineMarkup(state, form) {
 /** The running rest timer of the stored draft and the role it aims by, or null (a set timer never beeps). */
 function draftRest(state) {
   const d = state.draft;
-  const timer = d && Array.isArray(d.entries) && !d.editingId ? usableTimer(d.timer, Date.now()) : null;
+  const timer = d && Array.isArray(d.entries) ? draftTimer(d, Date.now()) : null;
   const entry = timer && timer.kind === 'rest' && d.entries.find((e) => e && e.uid === timer.uid);
   return entry ? { rest: timer, role: restRoleOf(d, entry, formPairs(state, d)) } : null;
 }
@@ -756,6 +771,7 @@ export function renderToday(root, ctx) {
       </div>
       <h1 class="big">Day ${positionOf(state, form)} of 6 · ${dayName(form.day)}</h1>
       <p class="timeline" data-timeline ${timeline ? '' : 'hidden'}>${timeline}</p>
+      ${editing ? '' : html`<button type="button" class="start-workout" data-act="start-workout" data-fk="start-workout" ${canStart(ctx, form) ? '' : 'hidden'}><span class="go" aria-hidden="true">▶</span> Start workout</button>`}
       <div class="picker" data-act="pick-day"><span>Doing a different workout?</span>
         <button type="button" class="link" data-act="pick-day" data-fk="pick-day" aria-haspopup="dialog">Change<span aria-hidden="true"> ▾</span></button></div>
     </header>
@@ -801,23 +817,26 @@ export function renderToday(root, ctx) {
     updateOpen(cardsFor(ctx.state, form), timerScene(ctx.state, form));
     for (const e of form.entries) if (ui.opened.has(e.uid) && !before.has(e.uid)) redrawCard(e);
   };
-  /** The line under the heading, brought up to date. */
+  /** The line under the heading, brought up to date, and the Start workout button shown only until the workout starts. */
   const updateTimeline = () => {
     const el = root.querySelector('[data-timeline]');
     if (!el) return;
     const markup = timelineMarkup(ctx.state, form);
     el.hidden = !markup;
     setHTML(el, markup);
+    const start = root.querySelector('[data-act="start-workout"]');
+    if (start) start.hidden = !canStart(ctx, form);
   };
   /**
-   * The workout starts (§18.3; review 24/11/2026) at the first Start tap or the first reps typed, whichever comes first,
-   * so the first set's time is inside the workout. Only a new workout logged on its own date (one typed in later for
-   * another day gets no clock times — they would say when it was typed, not when it was done); a start from an earlier
-   * sitting (`liveStart`: more than 4 hours ago, a draft from before the update, a date changed back to today) starts
-   * the clock again.
+   * The workout starts on a tap of Start workout (§20.1), or failing that (§18.3; owner 24/11/2026) at the first
+   * warm-up tick, the first Start tap or the first reps typed, whichever comes first, so the warm-up and the first set
+   * are inside the workout. Only a new workout logged on its own date (`canStart`: one typed in later for another day
+   * gets no clock times — they would say when it was typed, not when it was done); a start from an earlier sitting
+   * (`liveStart`: more than 4 hours ago, a draft from before the update, a date changed back to today) starts the clock
+   * again.
    */
   const startClock = () => {
-    if (form.editingId || form.date !== ctx.today() || liveStart(form)) return;
+    if (!canStart(ctx, form)) return;
     form.startedAt = nowLocal();
     updateTimeline();
   };
@@ -1006,7 +1025,10 @@ export function renderToday(root, ctx) {
       const hit = cardOf(t);
       if (!hit) return;
       const ticks = warmupTicks(form, hit.entry, Infinity);
-      if (t.checked) ticks.add(Number(t.dataset.warmI)); else ticks.delete(Number(t.dataset.warmI));
+      if (t.checked) {
+        ticks.add(Number(t.dataset.warmI));
+        startClock(); // the first warm-up tick starts the workout (owner 24/11/2026)
+      } else ticks.delete(Number(t.dataset.warmI));
       form.warmup = { ...(form.warmup || {}), [hit.entry.uid]: [...ticks].sort((a, b) => a - b) };
       t.closest('.wl-item').classList.toggle('done', t.checked);
       const count = hit.sec.querySelector('[data-warm-count]');
@@ -1039,6 +1061,12 @@ export function renderToday(root, ctx) {
         break;
       }
       case 'pick-day': openDayPicker(ctx, form, changed); break;
+      case 'start-workout': // §20.1: the start on purpose; saved now, so a reload keeps it even with no reps
+        if (!canStart(ctx, form)) break;
+        startClock();
+        changed();
+        ctx.saveNow();
+        break;
       case 'cancel-edit': ctx.commit({ ...ctx.state, draft: null }); break;
       case 'export-now': ctx.go('data'); break;
       case 'open-card':
@@ -1129,8 +1157,10 @@ export function renderToday(root, ctx) {
 
   let minute = nowLocal();
   tickWhileShown(ctx, root, () => {
-    // After midnight an untouched form belongs to the new day (and "Done for today" may be over).
-    if (ctx.today() !== today && !ctx.state.draft) { ctx.render(); return; }
+    // After midnight an untouched form, or a draft not started yet (`movesToToday`), belongs to the new day (and "Done
+    // for today" may be over): redraw, so its date, Start workout (§20.1) and the start rule follow the new day.
+    const draft = ctx.state.draft;
+    if (ctx.today() !== today && (!draft || (draft === form && movesToToday(form, ctx.today())))) { ctx.render(); return; }
     tickTimers();
     if (nowLocal() !== minute) { minute = nowLocal(); updateTimeline(); } // "N min so far"
   });
@@ -1186,6 +1216,7 @@ function openDayPicker(ctx, form, changed) {
       if (!ok) return;
     }
     const next = freshForm(ctx.state, { date: form.date, day, offDay: form.offDay, note: form.note, dateChosen: form.dateChosen });
+    if (liveStart(form)) next.startedAt = form.startedAt; // a started workout stays started (§20.1: nothing moves the start)
     ctx.setState({ ...ctx.state, draft: next });
     ctx.saveSoon();
     ctx.render({ keepScroll: false });
